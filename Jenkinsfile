@@ -3,7 +3,10 @@
 pipeline {
     agent any
 
-    triggers { cron('H/30 * * * *') }
+    triggers { 
+        githubPush()
+        cron('H/30 * * * *') 
+    }
 
     options {
         disableConcurrentBuilds(abortPrevious: true)
@@ -58,78 +61,69 @@ pipeline {
             steps {
                 script {
 
-                    // 🔥 IMPORTANT: Convert JSON → pure serializable structure
-                    def parsed = readJSON text: env.MAP
+                    def mapping = new groovy.json.JsonSlurperClassic()
+                        .parseText(env.MAPPING_JSON)
 
                     def jobs = [:]
 
-                    parsed.each { key, value ->
-
-                        // 🔥 Extract ONLY primitives (critical)
-                        def app     = "${value.app}"
-                        def repo    = "${value.repo}"
-                        def branch  = "${value.branch}"
-                        def envName = "${value.env}"
+                    mapping.each { key, value ->
 
                         jobs[key] = {
 
+                            def app    = value.app
+                            def repo   = value.repo
+                            def branch = value.branch
+                            def envName= value.env
+
                             echo "🚀 ${app} | ${branch} → ${envName}"
 
-                            // 🔷 Get commit safely (no LazyMap, no credentials issues)
-                            def commit
+                            // 🔷 1. Get latest commit
+                            def latestCommit = ""
 
                             dir("tmp-${branch}") {
                                 deleteDir()
 
                                 checkout([
                                     $class: 'GitSCM',
-                                    branches: [[name: "${branch}"]],
+                                    branches: [[name: "*/${branch}"]],
                                     userRemoteConfigs: [[
                                         url: repo,
                                         credentialsId: 'github-token'
                                     ]]
                                 ])
 
-                                commit = sh(
-                                    script: "git rev-parse --short HEAD",
+                                latestCommit = sh(
+                                    script: "git rev-parse HEAD",
                                     returnStdout: true
                                 ).trim()
                             }
-                            notify("🚀 ${app} | ${branch} → ${envName}")
-                            // 🔷 Read last deployed commit
-                            def buildState = "/opt/build-state/${app}/dev.commit"
+
+                            echo "Latest commit: ${latestCommit}"
+
+                            // 🔷 2. Read build-state
+                            def stateFile = "/u01/jenkins/jenkins/build-state/${app}/dev.commit"
 
                             def lastBuilt = sh(
-                                script: "[ -f ${buildState} ] && cat ${buildState} || echo none",
+                                script: "[ -f ${stateFile} ] && cat ${stateFile} || echo none",
                                 returnStdout: true
                             ).trim()
 
-                            if (commit == lastBuilt) {
-                                echo "⏭️ Already built → skipping"
+                            echo "Last built: ${lastBuilt}"
+
+                            // 🔥 3. SKIP if same commit
+                            if (latestCommit == lastBuilt) {
+                                echo "⏭️ Skipping ${branch} (already built)"
                                 return
                             }
 
-                            // 🔷 Trigger pipelines
-                            if (envName == 'dev') {
-
-                                build job: 'Build-Pipeline',
-                                    wait: false,
-                                    parameters: [
-                                        string(name: 'APP_NAME', value: app),
-                                        string(name: 'REPO_URL', value: repo),
-                                        string(name: 'BRANCH_NAME', value: branch)
-                                    ]
-
-                            } else {
-
-                                build job: 'Deploy-Pipeline',
-                                    wait: false,
-                                    parameters: [
-                                        string(name: 'APP_NAME', value: app),
-                                        string(name: 'TARGET_ENV', value: envName),
-                                        string(name: 'COMMIT_HASH', value: commit)
-                                    ]
-                            }
+                            // 🔷 4. Trigger build
+                            build job: 'Build-Pipeline',
+                                parameters: [
+                                    string(name: 'APP_NAME', value: app),
+                                    string(name: 'REPO_URL', value: repo),
+                                    string(name: 'BRANCH_NAME', value: branch)
+                                ],
+                                wait: false
                         }
                     }
 
