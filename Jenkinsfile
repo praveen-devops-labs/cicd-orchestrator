@@ -38,18 +38,18 @@ pipeline {
             }
         }
 
-        stage('Discover') {
-            steps {
-                script {
-                    def branches = sh(
-                        script: "git ls-remote --heads ${APP_REPO} | awk '{print \$2}' | sed 's#refs/heads/##'",
-                        returnStdout: true
-                    ).trim().split("\n")
+        // stage('Discover') {
+        //     steps {
+        //         script {
+        //             def branches = sh(
+        //                 script: "git ls-remote --heads ${APP_REPO} | awk '{print \$2}' | sed 's#refs/heads/##'",
+        //                 returnStdout: true
+        //             ).trim().split("\n")
 
-                    env.BRANCHES = branches.join(",")
-                }
-            }
-        }
+        //             env.BRANCHES = branches.join(",")
+        //         }
+        //     }
+        // }
 
         stage('Process') {
             steps {
@@ -58,24 +58,33 @@ pipeline {
                     def mapping = new groovy.json.JsonSlurper().parseText(env.MAP)
                     def jobs = [:]
 
-                    env.BRANCHES.split(",").each { b ->
+                    mapping.each { key, cfg ->
 
-                        if (!mapping.containsKey(b)) return
+                        def app     = cfg.app
+                        def repo    = cfg.repo
+                        def branch  = cfg.branch
+                        def envName = cfg.env
 
-                        def envName = mapping[b]
+                        jobs[key] = {
 
-                        jobs[b] = {
+                            echo "🚀 ${app} | ${branch} → ${envName}"
 
                             def commit = sh(
-                                script: "git ls-remote ${APP_REPO} refs/heads/${b} | cut -f1 | cut -c1-7",
+                                script: "git ls-remote ${repo} refs/heads/${branch} | cut -f1 | cut -c1-7",
                                 returnStdout: true
                             ).trim()
 
-                            def file = "/opt/deploy-state/${APP_NAME}/${envName}.commit"
-                            def exists = sh(script: "[ -f ${file} ] && cat ${file} || echo none", returnStdout: true).trim()
+                            def stateFile = "/opt/deploy-state/${app}/${envName}.commit"
 
-                            if (commit == exists) {
-                                echo "⏭️ Skip ${b}"
+                            def last = sh(
+                                script: "[ -f ${stateFile} ] && cat ${stateFile} || echo none",
+                                returnStdout: true
+                            ).trim()
+
+                            echo "Current: ${commit}, Last: ${last}"
+
+                            if (commit == last) {
+                                echo "⏭️ Skipping (no change)"
                                 return
                             }
 
@@ -84,9 +93,9 @@ pipeline {
                                 build job: 'Build-Pipeline',
                                     wait: false,
                                     parameters: [
-                                        string(name: 'APP_NAME', value: APP_NAME),
-                                        string(name: 'REPO_URL', value: APP_REPO),
-                                        string(name: 'BRANCH_NAME', value: b)
+                                        string(name: 'APP_NAME', value: app),
+                                        string(name: 'REPO_URL', value: repo),
+                                        string(name: 'BRANCH_NAME', value: branch)
                                     ]
 
                             } else {
@@ -94,7 +103,7 @@ pipeline {
                                 build job: 'Deploy-Pipeline',
                                     wait: false,
                                     parameters: [
-                                        string(name: 'APP_NAME', value: APP_NAME),
+                                        string(name: 'APP_NAME', value: app),
                                         string(name: 'TARGET_ENV', value: envName),
                                         string(name: 'COMMIT_HASH', value: commit)
                                     ]
