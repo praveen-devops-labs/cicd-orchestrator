@@ -1,105 +1,115 @@
+def notify(msg) {
+    def payload = groovy.json.JsonOutput.toJson([text: msg])
+    writeFile file: 'gchat.json', text: payload
+
+    withCredentials([string(credentialsId: 'gchat-webhook', variable: 'WEBHOOK')]) {
+        sh '''
+        curl -s -o /dev/null -X POST \
+        -H "Content-Type: application/json" \
+        --data @gchat.json "$WEBHOOK"
+        '''
+    }
+}
+
 pipeline {
     agent any
 
-    triggers {
-        cron('H/30 * * * *')
-    }
+    triggers { cron('H/30 * * * *') }
 
     options {
+        disableConcurrentBuilds(abortPrevious: true)
+        buildDiscarder(logRotator(numToKeepStr: '5'))
         timestamps()
-        disableConcurrentBuilds()
     }
 
     environment {
-        APP_REPO = "https://github.com/praveen-devops-labs/cicd-orchestrator.git"
-        CONTROL_REPO = "https://github.com/praveen-devops-labs/env-control-repo.git"
+        APP_REPO = "https://github.com/praveen-devops-labs/jenkins-cicd-demo.git"
+        APP_NAME = "myapp"
     }
 
     stages {
 
-        // 🔷 1. Discover branches
-        stage('Discover Branches') {
+        stage('Load Mapping') {
+            steps {
+                script {
+                    def config = readYaml file: 'mappings/current.yaml'
+                    env.MAP = groovy.json.JsonOutput.toJson(config.mappings)
+                }
+            }
+        }
+
+        stage('Discover') {
             steps {
                 script {
                     def branches = sh(
-                        script: """
-                        git ls-remote --heads ${APP_REPO} \
-                        | awk '{print \$2}' \
-                        | sed 's#refs/heads/##'
-                        """,
+                        script: "git ls-remote --heads ${APP_REPO} | awk '{print \$2}' | sed 's#refs/heads/##'",
                         returnStdout: true
                     ).trim().split("\n")
 
                     env.BRANCHES = branches.join(",")
-
-                    echo "🌿 Discovered branches:"
-                    branches.each { echo " - ${it}" }
                 }
             }
         }
 
-        // 🔷 2. Load mapping file
-        stage('Load Mapping') {
+        stage('Process') {
             steps {
                 script {
 
-                    dir('env-control') {
-                        deleteDir()
+                    def mapping = new groovy.json.JsonSlurper().parseText(env.MAP)
+                    def jobs = [:]
 
-                        git url: CONTROL_REPO, branch: 'main'
-                    }
+                    env.BRANCHES.split(",").each { b ->
 
-                    def config = readYaml file: 'env-control/mappings/current.yaml'
+                        if (!mapping.containsKey(b)) return
 
-                    if (!config?.mappings) {
-                        error "❌ Invalid mapping file: 'mappings' missing"
-                    }
+                        def envName = mapping[b]
 
-                    env.MAPPING_JSON = groovy.json.JsonOutput.toJson(config.mappings)
+                        jobs[b] = {
 
-                    echo "📄 Mapping loaded:"
-                    echo "${env.MAPPING_JSON}"
-                }
-            }
-        }
+                            def commit = sh(
+                                script: "git ls-remote ${APP_REPO} refs/heads/${b} | cut -f1 | cut -c1-7",
+                                returnStdout: true
+                            ).trim()
 
-        // 🔷 3. Process branches
-        stage('Process Branches') {
-            steps {
-                script {
+                            def file = "/opt/deploy-state/${APP_NAME}/${envName}.commit"
+                            def exists = sh(script: "[ -f ${file} ] && cat ${file} || echo none", returnStdout: true).trim()
 
-                    def branches = env.BRANCHES.split(",")
-                    def mapping = new groovy.json.JsonSlurper().parseText(env.MAPPING_JSON)
+                            if (commit == exists) {
+                                echo "⏭️ Skip ${b}"
+                                return
+                            }
 
-                    branches.each { branch ->
+                            if (envName == 'dev') {
 
-                        if (!mapping.containsKey(branch)) {
-                            echo "⏭️ Skipping ${branch} (no mapping)"
-                            return
+                                build job: 'Build-Pipeline',
+                                    wait: false,
+                                    parameters: [
+                                        string(name: 'APP_NAME', value: APP_NAME),
+                                        string(name: 'REPO_URL', value: APP_REPO),
+                                        string(name: 'BRANCH_NAME', value: b)
+                                    ]
+
+                            } else {
+
+                                build job: 'Deploy-Pipeline',
+                                    wait: false,
+                                    parameters: [
+                                        string(name: 'APP_NAME', value: APP_NAME),
+                                        string(name: 'TARGET_ENV', value: envName),
+                                        string(name: 'COMMIT_HASH', value: commit)
+                                    ]
+                            }
                         }
-
-                        def envName = mapping[branch]
-
-                        echo """
-===============================
-Branch   : ${branch}
-Env      : ${envName}
-===============================
-"""
-
-                        // 🔥 TEMP: Only log (next step will trigger jobs)
                     }
+
+                    parallel jobs
                 }
             }
         }
     }
 
     post {
-        success {
-            echo "✅ Orchestrator completed successfully"
-        }
-        failure {
-            echo "❌ Orchestrator failed"
-        }
+        success { notify("✅ Orchestrator Done") }
+        failure { notify("❌ Orchestrator Failed") }
     }
 }
