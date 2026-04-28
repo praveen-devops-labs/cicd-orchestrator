@@ -14,7 +14,10 @@ def notify(msg) {
 pipeline {
     agent any
 
-    triggers { cron('H/30 * * * *') }
+    // triggers { cron('H/30 * * * *') }
+    triggers {
+        githubPush()
+    }
 
     options {
         disableConcurrentBuilds(abortPrevious: true)
@@ -86,10 +89,22 @@ pipeline {
 
                             echo "🚀 ${app} | ${branch} → ${envName}"
 
-                            def commit = sh(
-                                script: "git ls-remote ${repo} refs/heads/${branch} | cut -f1 | cut -c1-7",
-                                returnStdout: true
-                            ).trim()
+                            def commit
+
+                            withCredentials([usernamePassword(
+                                credentialsId: 'github-token',
+                                usernameVariable: 'GIT_USER',
+                                passwordVariable: 'GIT_PASS'
+                            )]) {
+
+                                commit = sh(
+                                    script: """
+                                    git ls-remote https://${GIT_USER}:${GIT_PASS}@${repo.replace('https://','')} refs/heads/${branch} \
+                                    | cut -f1 | cut -c1-7
+                                    """,
+                                    returnStdout: true
+                                ).trim()
+                            }
 
                             def stateFile = "/opt/deploy-state/${app}/${envName}.commit"
 
