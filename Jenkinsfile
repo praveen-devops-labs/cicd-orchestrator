@@ -1,3 +1,4 @@
+notify("🚀 Orchestrator started")
 pipeline {
     agent any
 
@@ -85,20 +86,17 @@ pipeline {
                                     returnStdout: true
                                 ).trim()
                             }
-
+                            notify("🚀 ${app} | ${branch} → ${envName}")
                             // 🔷 Read last deployed commit
-                            def stateFile = "/opt/deploy-state/${app}/${envName}.commit"
+                            def buildState = "/opt/build-state/${app}/dev.commit"
 
-                            def last = sh(
-                                script: "[ -f ${stateFile} ] && cat ${stateFile} || echo none",
+                            def lastBuilt = sh(
+                                script: "[ -f ${buildState} ] && cat ${buildState} || echo none",
                                 returnStdout: true
                             ).trim()
 
-                            echo "Current: ${commit}, Last: ${last}"
-
-                            // 🔷 Skip if no changes
-                            if (commit == last) {
-                                echo "⏭️ Skipping (no change)"
+                            if (commit == lastBuilt) {
+                                echo "⏭️ Already built → skipping"
                                 return
                             }
 
