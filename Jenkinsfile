@@ -1,23 +1,7 @@
-def notify(msg) {
-    def payload = groovy.json.JsonOutput.toJson([text: msg])
-    writeFile file: 'gchat.json', text: payload
-
-    withCredentials([string(credentialsId: 'gchat-webhook', variable: 'WEBHOOK')]) {
-        sh '''
-        curl -s -o /dev/null -X POST \
-        -H "Content-Type: application/json" \
-        --data @gchat.json "$WEBHOOK"
-        '''
-    }
-}
-
 pipeline {
     agent any
 
-    // triggers { cron('H/30 * * * *') }
-    triggers {
-        githubPush()
-    }
+    triggers { cron('H/30 * * * *') }
 
     options {
         disableConcurrentBuilds(abortPrevious: true)
@@ -26,12 +10,12 @@ pipeline {
     }
 
     environment {
-        APP_REPO = "https://github.com/praveen-devops-labs/jenkins-cicd-demo.git"
-        APP_NAME = "myapp"
+        CONTROL_REPO = "https://github.com/praveen-devops-labs/env-control-repo.git"
     }
 
     stages {
 
+        // 🔷 1. Load Mapping from control repo
         stage('Load Mapping') {
             steps {
                 script {
@@ -39,15 +23,16 @@ pipeline {
                     dir('env-control') {
                         deleteDir()
 
-                        git url: 'https://github.com/praveen-devops-labs/env-control-repo.git',
+                        git url: CONTROL_REPO,
                             branch: 'main',
                             credentialsId: 'github-token'
                     }
 
+                    // Read YAML → convert to STRING → store in env (safe)
                     def config = readYaml file: 'env-control/mappings/current.yaml'
 
                     if (!config?.mappings) {
-                        error "❌ mappings not found in YAML"
+                        error "❌ mappings missing in YAML"
                     }
 
                     env.MAP = groovy.json.JsonOutput.toJson(config.mappings)
@@ -58,50 +43,29 @@ pipeline {
             }
         }
 
-        // stage('Discover') {
-        //     steps {
-        //         script {
-        //             def branches = sh(
-        //                 script: "git ls-remote --heads ${APP_REPO} | awk '{print \$2}' | sed 's#refs/heads/##'",
-        //                 returnStdout: true
-        //             ).trim().split("\n")
-
-        //             env.BRANCHES = branches.join(",")
-        //         }
-        //     }
-        // }
-
+        // 🔷 2. Process Mapping (SAFE)
         stage('Process') {
             steps {
                 script {
 
-                    def raw = new groovy.json.JsonSlurper().parseText(env.MAP)
-
-                    // 🔥 DEEP COPY → ensures NO LazyMap anywhere
-                    def mapping = [:]
-
-                    raw.each { k, v ->
-                        mapping[k] = [
-                            app: "${v.app}",
-                            repo: "${v.repo}",
-                            branch: "${v.branch}",
-                            env: "${v.env}"
-                        ]
-                    }
+                    // 🔥 IMPORTANT: Convert JSON → pure serializable structure
+                    def parsed = readJSON text: env.MAP
 
                     def jobs = [:]
 
-                    mapping.each { key, cfg ->
+                    parsed.each { key, value ->
 
-                        def app     = cfg.app
-                        def repo    = cfg.repo
-                        def branch  = cfg.branch
-                        def envName = cfg.env
+                        // 🔥 Extract ONLY primitives (critical)
+                        def app     = "${value.app}"
+                        def repo    = "${value.repo}"
+                        def branch  = "${value.branch}"
+                        def envName = "${value.env}"
 
                         jobs[key] = {
 
                             echo "🚀 ${app} | ${branch} → ${envName}"
 
+                            // 🔷 Get commit safely (no LazyMap, no credentials issues)
                             def commit
 
                             dir("tmp-${branch}") {
@@ -109,7 +73,7 @@ pipeline {
 
                                 checkout([
                                     $class: 'GitSCM',
-                                    branches: [[name: "*/${branch}"]],
+                                    branches: [[name: "${branch}"]],
                                     userRemoteConfigs: [[
                                         url: repo,
                                         credentialsId: 'github-token'
@@ -122,6 +86,7 @@ pipeline {
                                 ).trim()
                             }
 
+                            // 🔷 Read last deployed commit
                             def stateFile = "/opt/deploy-state/${app}/${envName}.commit"
 
                             def last = sh(
@@ -131,11 +96,13 @@ pipeline {
 
                             echo "Current: ${commit}, Last: ${last}"
 
+                            // 🔷 Skip if no changes
                             if (commit == last) {
                                 echo "⏭️ Skipping (no change)"
                                 return
                             }
 
+                            // 🔷 Trigger pipelines
                             if (envName == 'dev') {
 
                                 build job: 'Build-Pipeline',
@@ -166,7 +133,11 @@ pipeline {
     }
 
     post {
-        success { notify("✅ Orchestrator Done") }
-        failure { notify("❌ Orchestrator Failed") }
+        success {
+            echo "✅ Orchestrator completed"
+        }
+        failure {
+            echo "❌ Orchestrator failed"
+        }
     }
 }
