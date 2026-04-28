@@ -91,17 +91,20 @@ pipeline {
 
                             def commit
 
-                            withCredentials([usernamePassword(
-                                credentialsId: 'github-token',
-                                usernameVariable: 'GIT_USER',
-                                passwordVariable: 'GIT_PASS'
-                            )]) {
+                            dir("tmp-${branch}") {
+                                deleteDir()
+
+                                checkout([
+                                    $class: 'GitSCM',
+                                    branches: [[name: "*/${branch}"]],
+                                    userRemoteConfigs: [[
+                                        url: repo,
+                                        credentialsId: 'github-token'
+                                    ]]
+                                ])
 
                                 commit = sh(
-                                    script: """
-                                    git ls-remote https://${GIT_USER}:${GIT_PASS}@${repo.replace('https://','')} refs/heads/${branch} \
-                                    | cut -f1 | cut -c1-7
-                                    """,
+                                    script: "git rev-parse --short HEAD",
                                     returnStdout: true
                                 ).trim()
                             }
