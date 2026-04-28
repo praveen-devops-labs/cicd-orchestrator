@@ -3,9 +3,9 @@
 pipeline {
     agent any
 
-    triggers { 
+    triggers {
         githubPush()
-        cron('H/30 * * * *') 
+        cron('H/30 * * * *')
     }
 
     options {
@@ -28,41 +28,44 @@ pipeline {
             }
         }
 
-        // 🔷 1. Load Mapping from control repo
         stage('Load Mapping') {
             steps {
                 script {
-                    
                     dir('env-control') {
                         deleteDir()
 
-                        git url: CONTROL_REPO,
+                        git url: env.CONTROL_REPO,
                             branch: 'main',
                             credentialsId: 'github-token'
                     }
 
-                    // Read YAML → convert to STRING → store in env (safe)
+                    // ✅ Direct YAML read (NO sandbox issue)
                     def config = readYaml file: 'env-control/mappings/current.yaml'
 
                     if (!config?.mappings) {
-                        error "❌ mappings missing in YAML"
+                        error "❌ mappings not found in YAML"
                     }
 
-                    env.MAP = groovy.json.JsonOutput.toJson(config.mappings)
+                    // store as normal map (IMPORTANT: no serialization issues)
+                    env.MAPPING_KEYS = config.mappings.keySet().join(",")
 
-                    echo "📄 Mapping loaded:"
-                    echo env.MAP
+                    // store entire object in memory (not env)
+                    currentBuild.description = "Mappings loaded"
+                    // we will reuse config in same script block later
+                    // (don't try to store full map in env → causes LazyMap issue)
+
+                    // save to global variable safely
+                    // using Jenkins trick
+                    binding.setVariable("MAPPINGS_OBJ", config.mappings)
                 }
             }
         }
 
-        // 🔷 2. Process Mapping (SAFE)
         stage('Process') {
             steps {
                 script {
 
-                    def mapping = new groovy.json.JsonSlurperClassic()
-                        .parseText(env.MAPPING_JSON)
+                    def mapping = binding.getVariable("MAPPINGS_OBJ")
 
                     def jobs = [:]
 
@@ -70,14 +73,14 @@ pipeline {
 
                         jobs[key] = {
 
-                            def app    = value.app
-                            def repo   = value.repo
-                            def branch = value.branch
-                            def envName= value.env
+                            def app     = value.app
+                            def repo    = value.repo
+                            def branch  = value.branch
+                            def envName = value.env
 
                             echo "🚀 ${app} | ${branch} → ${envName}"
 
-                            // 🔷 1. Get latest commit
+                            // 🔷 1. Get latest commit safely
                             def latestCommit = ""
 
                             dir("tmp-${branch}") {
@@ -110,11 +113,13 @@ pipeline {
 
                             echo "Last built: ${lastBuilt}"
 
-                            // 🔥 3. SKIP if same commit
+                            // 🔥 3. Skip if already built
                             if (latestCommit == lastBuilt) {
                                 echo "⏭️ Skipping ${branch} (already built)"
                                 return
                             }
+
+                            notify("🚀 Triggering ${app} ${branch}")
 
                             // 🔷 4. Trigger build
                             build job: 'Build-Pipeline',
@@ -134,11 +139,7 @@ pipeline {
     }
 
     post {
-        success {
-            echo "✅ Orchestrator completed"
-        }
-        failure {
-            echo "❌ Orchestrator failed"
-        }
+        success { echo "✅ Orchestrator success" }
+        failure { echo "❌ Orchestrator failed" }
     }
 }
