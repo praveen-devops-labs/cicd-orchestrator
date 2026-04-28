@@ -32,8 +32,25 @@ pipeline {
         stage('Load Mapping') {
             steps {
                 script {
-                    def config = readYaml file: 'mappings/current.yaml'
+
+                    dir('env-control') {
+                        deleteDir()
+
+                        git url: 'https://github.com/praveen-devops-labs/env-control-repo.git',
+                            branch: 'main',
+                            credentialsId: 'github-token'
+                    }
+
+                    def config = readYaml file: 'env-control/mappings/current.yaml'
+
+                    if (!config?.mappings) {
+                        error "❌ mappings not found in YAML"
+                    }
+
                     env.MAP = groovy.json.JsonOutput.toJson(config.mappings)
+
+                    echo "📄 Mapping loaded:"
+                    echo env.MAP
                 }
             }
         }
