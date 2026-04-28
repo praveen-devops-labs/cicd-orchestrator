@@ -1,4 +1,5 @@
-notify("🚀 Orchestrator started")
+@Library('cicd-library') _
+
 pipeline {
     agent any
 
@@ -16,11 +17,19 @@ pipeline {
 
     stages {
 
+        stage('Start') {
+            steps {
+                script {
+                    notify("🚀 Orchestrator started")
+                }
+            }
+        }
+
         // 🔷 1. Load Mapping from control repo
         stage('Load Mapping') {
             steps {
                 script {
-
+                    
                     dir('env-control') {
                         deleteDir()
 
