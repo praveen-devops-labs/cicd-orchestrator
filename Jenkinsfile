@@ -3,9 +3,9 @@
 pipeline {
     agent any
 
-    triggers {
+    triggers { 
         githubPush()
-        cron('H/30 * * * *')
+        cron('H/30 * * * *') 
     }
 
     options {
@@ -28,61 +28,59 @@ pipeline {
             }
         }
 
+        // 🔷 1. Load Mapping
         stage('Load Mapping') {
             steps {
                 script {
+                    
                     dir('env-control') {
                         deleteDir()
 
-                        git url: env.CONTROL_REPO,
+                        git url: CONTROL_REPO,
                             branch: 'main',
                             credentialsId: 'github-token'
                     }
 
-                    // ✅ Direct YAML read (NO sandbox issue)
                     def config = readYaml file: 'env-control/mappings/current.yaml'
 
                     if (!config?.mappings) {
-                        error "❌ mappings not found in YAML"
+                        error "❌ mappings missing in YAML"
                     }
 
-                    // store as normal map (IMPORTANT: no serialization issues)
-                    env.MAPPING_KEYS = config.mappings.keySet().join(",")
+                    // ✅ SAFE serialization
+                    env.MAP = groovy.json.JsonOutput.toJson(config.mappings)
 
-                    // store entire object in memory (not env)
-                    currentBuild.description = "Mappings loaded"
-                    // we will reuse config in same script block later
-                    // (don't try to store full map in env → causes LazyMap issue)
-
-                    // save to global variable safely
-                    // using Jenkins trick
-                    binding.setVariable("MAPPINGS_OBJ", config.mappings)
+                    echo "📄 Mapping loaded:"
+                    echo env.MAP
                 }
             }
         }
 
+        // 🔷 2. Process
         stage('Process') {
             steps {
                 script {
 
-                    def mapping = binding.getVariable("MAPPINGS_OBJ")
+                    // ✅ SAFE parse
+                    def parsed = readJSON text: env.MAP
 
                     def jobs = [:]
 
-                    mapping.each { key, value ->
+                    parsed.each { key, value ->
+
+                        // ✅ extract primitives (IMPORTANT)
+                        def app     = "${value.app}"
+                        def repo    = "${value.repo}"
+                        def branch  = "${value.branch}"
+                        def envName = "${value.env}"
 
                         jobs[key] = {
 
-                            def app     = value.app
-                            def repo    = value.repo
-                            def branch  = value.branch
-                            def envName = value.env
-
                             echo "🚀 ${app} | ${branch} → ${envName}"
 
-                            // 🔷 1. Get latest commit safely
-                            def latestCommit = ""
+                            def commit
 
+                            // 🔷 Get latest commit
                             dir("tmp-${branch}") {
                                 deleteDir()
 
@@ -95,40 +93,53 @@ pipeline {
                                     ]]
                                 ])
 
-                                latestCommit = sh(
+                                commit = sh(
                                     script: "git rev-parse HEAD",
                                     returnStdout: true
                                 ).trim()
                             }
 
-                            echo "Latest commit: ${latestCommit}"
+                            echo "Latest commit: ${commit}"
 
-                            // 🔷 2. Read build-state
-                            def stateFile = "/u01/jenkins/jenkins/build-state/${app}/dev.commit"
+                            // 🔥 FIXED PATH
+                            def buildState = "/u01/jenkins/jenkins/build-state/${app}/dev.commit"
 
                             def lastBuilt = sh(
-                                script: "[ -f ${stateFile} ] && cat ${stateFile} || echo none",
+                                script: "[ -f ${buildState} ] && cat ${buildState} || echo none",
                                 returnStdout: true
                             ).trim()
 
                             echo "Last built: ${lastBuilt}"
 
-                            // 🔥 3. Skip if already built
-                            if (latestCommit == lastBuilt) {
-                                echo "⏭️ Skipping ${branch} (already built)"
+                            // 🔥 CRITICAL CHECK
+                            if (commit == lastBuilt) {
+                                echo "⏭️ Already built → skipping"
                                 return
                             }
 
                             notify("🚀 Triggering ${app} ${branch}")
 
-                            // 🔷 4. Trigger build
-                            build job: 'Build-Pipeline',
-                                parameters: [
-                                    string(name: 'APP_NAME', value: app),
-                                    string(name: 'REPO_URL', value: repo),
-                                    string(name: 'BRANCH_NAME', value: branch)
-                                ],
-                                wait: false
+                            // 🔷 Trigger
+                            if (envName == 'dev') {
+
+                                build job: 'Build-Pipeline',
+                                    wait: false,
+                                    parameters: [
+                                        string(name: 'APP_NAME', value: app),
+                                        string(name: 'REPO_URL', value: repo),
+                                        string(name: 'BRANCH_NAME', value: branch)
+                                    ]
+
+                            } else {
+
+                                build job: 'Deploy-Pipeline',
+                                    wait: false,
+                                    parameters: [
+                                        string(name: 'APP_NAME', value: app),
+                                        string(name: 'TARGET_ENV', value: envName),
+                                        string(name: 'COMMIT_HASH', value: commit)
+                                    ]
+                            }
                         }
                     }
 
@@ -139,7 +150,11 @@ pipeline {
     }
 
     post {
-        success { echo "✅ Orchestrator success" }
-        failure { echo "❌ Orchestrator failed" }
+        success {
+            echo "✅ Orchestrator completed"
+        }
+        failure {
+            echo "❌ Orchestrator failed"
+        }
     }
 }
