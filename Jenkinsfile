@@ -75,7 +75,18 @@ pipeline {
             steps {
                 script {
 
-                    def mapping = new groovy.json.JsonSlurper().parseText(env.MAP)
+                    def raw = new groovy.json.JsonSlurper().parseText(env.MAP)
+
+                    def mapping = [:]
+                    raw.each { k, v ->
+                        mapping[k] = [
+                            app: v.app,
+                            repo: v.repo,
+                            branch: v.branch,
+                            env: v.env
+                        ]
+                    }
+
                     def jobs = [:]
 
                     mapping.each { key, cfg ->
