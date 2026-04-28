@@ -77,13 +77,15 @@ pipeline {
 
                     def raw = new groovy.json.JsonSlurper().parseText(env.MAP)
 
+                    // 🔥 DEEP COPY → ensures NO LazyMap anywhere
                     def mapping = [:]
+
                     raw.each { k, v ->
                         mapping[k] = [
-                            app: v.app,
-                            repo: v.repo,
-                            branch: v.branch,
-                            env: v.env
+                            app: "${v.app}",
+                            repo: "${v.repo}",
+                            branch: "${v.branch}",
+                            env: "${v.env}"
                         ]
                     }
 
