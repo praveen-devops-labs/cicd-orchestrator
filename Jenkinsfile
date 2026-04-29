@@ -5,7 +5,7 @@ pipeline {
 
     triggers {
         githubPush()
-        cron('H/2 * * * *')   // 🔥 every 2 mins (good for testing)
+        cron('H/15 * * * *')
     }
 
     options {
