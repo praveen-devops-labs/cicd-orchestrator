@@ -9,7 +9,7 @@ pipeline {
 
     triggers { 
         githubPush()
-        cron('H/30 * * * *') 
+        cron('H/2 * * * *') 
     }
 
     options {
