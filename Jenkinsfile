@@ -28,9 +28,7 @@ pipeline {
             steps {
                 script {
                     gchatNotify(
-                                "Orchestrator Started for ${app} | ${branch} → ${envName}",
-                                app,
-                                envName
+                                "Orchestrator Started" 
                             )
                 }
             }
