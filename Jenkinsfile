@@ -3,14 +3,14 @@
 pipeline {
     agent any
 
-    triggers { 
-        githubPush()        
-    }
-
     // triggers { 
-    //     githubPush()
-    //     cron('H/30 * * * *') 
+    //     githubPush()        
     // }
+
+    triggers { 
+        githubPush()
+        cron('H/30 * * * *') 
+    }
 
     options {
         disableConcurrentBuilds(abortPrevious: true)
