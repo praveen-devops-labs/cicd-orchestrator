@@ -23,7 +23,7 @@ pipeline {
         stage('Start') {
             steps {
                 script {
-                    notify("🚀 Orchestrator started")
+                    gchatnotify("Orchestrator started")
                 }
             }
         }
@@ -117,7 +117,7 @@ pipeline {
                                 return
                             }
 
-                            notify("🚀 Triggering ${app} ${branch}")
+                            gchatnotify("Triggering ${app} ${branch}")
 
                             // 🔷 Trigger
                             if (envName == 'dev') {
