@@ -77,10 +77,21 @@ pipeline {
                         }
 
                         // 🔷 Lightweight commit fetch (NO clone)
-                        def commit = sh(
-                            script: "git ls-remote ${repo} refs/heads/${branch} | cut -f1",
-                            returnStdout: true
-                        ).trim()
+                        def commit
+
+                        withCredentials([usernamePassword(
+                            credentialsId: 'github-token',
+                            usernameVariable: 'GIT_USER',
+                            passwordVariable: 'GIT_PASS'
+                        )]) {
+
+                            def safeRepo = repo.replace("https://", "https://${GIT_USER}:${GIT_PASS}@")
+
+                            commit = sh(
+                                script: "git ls-remote ${safeRepo} refs/heads/${branch} | cut -f1",
+                                returnStdout: true
+                            ).trim()
+                        }
 
                         if (!commit) {
                             echo "⚠️ Cannot fetch commit for ${app}"
