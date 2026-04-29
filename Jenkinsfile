@@ -5,7 +5,7 @@ pipeline {
 
     triggers {
         // 🔥 Use polling for now
-        cron('H/1 * * * *')
+        cron('* * * * *')
     }
 
     options {
