@@ -102,7 +102,7 @@ pipeline {
                             echo "Latest commit: ${commit}"
 
                             // 🔥 FIXED PATH
-                            def buildState = "/u01/jenkins/jenkins/build-state/${app}/dev.commit"
+                            def buildState = "/u01/jenkins/jenkins/build-state/${app}/${envName}.commit"
 
                             def lastBuilt = sh(
                                 script: "[ -f ${buildState} ] && cat ${buildState} || echo none",
