@@ -7,8 +7,7 @@ pipeline {
     //     githubPush()        
     // }
 
-    triggers { 
-        githubPush()
+    triggers {         
         cron('H/2 * * * *') 
     }
 
