@@ -4,12 +4,12 @@ pipeline {
     agent any
 
     triggers {
-        githubPush()
-        cron('H/15 * * * *')
+        // 🔥 Use polling for now
+        cron('H/5 * * * *')
     }
 
     options {
-        disableConcurrentBuilds(abortPrevious: true)
+        disableConcurrentBuilds() // ✅ allow parallel triggers
         buildDiscarder(logRotator(numToKeepStr: '5'))
         timestamps()
     }
@@ -47,7 +47,6 @@ pipeline {
                         error "❌ mappings missing in YAML"
                     }
 
-                    // ✅ Safe serialization
                     env.MAP = groovy.json.JsonOutput.toJson(config.mappings)
 
                     echo "📄 Mapping loaded"
@@ -55,7 +54,7 @@ pipeline {
             }
         }
 
-        // 🔷 Process (Polling Scan)
+        // 🔷 Process (Polling)
         stage('Process') {
             steps {
                 script {
@@ -66,18 +65,16 @@ pipeline {
 
                     parsed.each { key, value ->
 
-                        // ✅ extract primitives (NO LazyMap issues)
                         def app     = value.app.toString()
                         def repo    = value.repo.toString()
                         def branch  = value.branch.toString()
                         def envName = value.env.toString()
 
-                        // 🔥 ONLY build for dev
+                        // 🔥 Only dev builds
                         if (envName != 'dev') {
                             return
                         }
 
-                        // 🔷 Lightweight commit fetch (NO clone)
                         def commit
 
                         withCredentials([usernamePassword(
@@ -86,29 +83,19 @@ pipeline {
                             passwordVariable: 'GIT_PASS'
                         )]) {
 
-                            def safeRepo = repo.replace("https://", "https://${GIT_USER}:${GIT_PASS}@")
-
-                            def commit
-
-                            withCredentials([usernamePassword(
-                                credentialsId: 'github-token',
-                                usernameVariable: 'GIT_USER',
-                                passwordVariable: 'GIT_PASS'
-                            )]) {
-                                commit = sh(
-                                    script: """
-                                    git ls-remote https://$GIT_USER:$GIT_PASS@${safeRepo.replace('https://','')} refs/heads/${branch} | cut -f1
-                                    """,
-                                    returnStdout: true
-                                ).trim()
-                            }
+                            commit = sh(
+                                script: """
+                                git ls-remote https://$GIT_USER:$GIT_PASS@${repo.replace('https://','')} refs/heads/${branch} | cut -f1
+                                """,
+                                returnStdout: true
+                            ).trim()
+                        }
 
                         if (!commit) {
                             echo "⚠️ Cannot fetch commit for ${app}"
                             return
                         }
 
-                        // 🔷 State file
                         def stateFile = "/u01/jenkins/jenkins/build-state/${app}/dev.commit"
 
                         def lastBuilt = sh(
@@ -120,16 +107,13 @@ pipeline {
                         echo "   Latest : ${commit}"
                         echo "   Last   : ${lastBuilt}"
 
-                        // 🔥 Skip if no change
                         if (commit == lastBuilt) {
                             echo "⏭️ No changes → skipping ${app}"
                             return
                         }
 
-                        // 🔥 Mark change detected
                         changesDetected = true
 
-                        // 🔷 Parallel job
                         jobs[key] = {
 
                             echo "🚀 Triggering ${app} (${branch})"
@@ -146,14 +130,17 @@ pipeline {
                         }
                     }
 
-                    // 🔥 Exit fast if no changes
                     if (!changesDetected) {
                         echo "⏭️ No changes across all repos"
                         currentBuild.description = "No changes"
                         return
                     }
 
-                    // 🔥 Run parallel builds
+                    if (jobs.isEmpty()) {
+                        echo "⚠️ No jobs to run"
+                        return
+                    }
+
                     parallel jobs
                 }
             }
