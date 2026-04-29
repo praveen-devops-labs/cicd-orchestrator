@@ -88,11 +88,20 @@ pipeline {
 
                             def safeRepo = repo.replace("https://", "https://${GIT_USER}:${GIT_PASS}@")
 
-                            commit = sh(
-                                script: "git ls-remote ${safeRepo} refs/heads/${branch} | cut -f1",
-                                returnStdout: true
-                            ).trim()
-                        }
+                            def commit
+
+                            withCredentials([usernamePassword(
+                                credentialsId: 'github-token',
+                                usernameVariable: 'GIT_USER',
+                                passwordVariable: 'GIT_PASS'
+                            )]) {
+                                commit = sh(
+                                    script: """
+                                    git ls-remote https://$GIT_USER:$GIT_PASS@${safeRepo.replace('https://','')} refs/heads/${branch} | cut -f1
+                                    """,
+                                    returnStdout: true
+                                ).trim()
+                            }
 
                         if (!commit) {
                             echo "⚠️ Cannot fetch commit for ${app}"
