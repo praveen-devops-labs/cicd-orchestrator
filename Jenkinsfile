@@ -4,9 +4,13 @@ pipeline {
     agent any
 
     triggers { 
-        githubPush()
-        cron('H/30 * * * *') 
+        githubPush()        
     }
+
+    // triggers { 
+    //     githubPush()
+    //     cron('H/30 * * * *') 
+    // }
 
     options {
         disableConcurrentBuilds(abortPrevious: true)
@@ -23,7 +27,7 @@ pipeline {
         stage('Start') {
             steps {
                 script {
-                    gchatnotify("Orchestrator started")
+                    gchatNotify("🚀 Orchestrator started", "platform", "dev")
                 }
             }
         }
@@ -117,7 +121,11 @@ pipeline {
                                 return
                             }
 
-                            gchatnotify("Triggering ${app} ${branch}")
+                            gchatNotify(
+                                "Triggering ${app} | ${branch} → ${envName}",
+                                app,
+                                envName
+                            )
 
                             // 🔷 Trigger
                             if (envName == 'dev') {
