@@ -27,7 +27,7 @@ pipeline {
         stage('Start') {
             steps {
                 script {
-                    gchatNotify("🚀 Orchestrator started", "platform", "dev")
+                    gchatNotify("Orchestrator started", "platform", "dev")
                 }
             }
         }
