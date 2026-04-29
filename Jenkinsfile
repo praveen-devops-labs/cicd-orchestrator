@@ -62,37 +62,64 @@ pipeline {
             }
         }
 
+        stage('Load Notifications') {
+            steps {
+                script {
+
+                    def notifConfig = readYaml file: 'env-control/mappings/notifications.yaml'
+
+                    if (!notifConfig?.notifications) {
+                        error "❌ notifications missing"
+                    }
+
+                    env.NOTIFY_MAP = groovy.json.JsonOutput.toJson(notifConfig.notifications)
+
+                    echo "📢 Notification mapping loaded"
+                }
+            }
+        }    
+
         // 🔷 2. Process
         stage('Process') {
             steps {
                 script {
 
-                    // ✅ SAFE parse
+                    def notifyMap = readJSON text: env.NOTIFY_MAP
                     def parsed = readJSON text: env.MAP
 
                     def jobs = [:]
 
                     parsed.each { key, value ->
 
-                        // ✅ extract primitives (IMPORTANT)
-                        def app     = "${value.app}"
-                        def repo    = "${value.repo}"
-                        def branch  = "${value.branch}"
-                        def envName = "${value.env}"
+                        // ✅ define first
+                        def app     = value.app.toString()
+                        def repo    = value.repo.toString()
+                        def branch  = value.branch.toString()
+                        def envName = value.env.toString()
 
                         jobs[key] = {
 
-                            echo "🚀 ${app} | ${branch} → ${envName}"
+                            echo "🚀 " + app + " | " + branch + " → " + envName
+
+                            // ✅ NOW safe to use
+                            def credentialId = notifyMap[app] != null ? notifyMap[app][envName] : null
+
+                            if (credentialId == null) {
+                                credentialId = notifyMap['default']
+                            }
+
+                            echo "Using webhook: " + credentialId
+
+                            // (for now just log, don’t use it yet)
 
                             def commit
 
-                            // 🔷 Get latest commit
-                            dir("tmp-${branch}") {
+                            dir("tmp-" + branch) {
                                 deleteDir()
 
                                 checkout([
                                     $class: 'GitSCM',
-                                    branches: [[name: "*/${branch}"]],
+                                    branches: [[name: "*/" + branch]],
                                     userRemoteConfigs: [[
                                         url: repo,
                                         credentialsId: 'github-token'
@@ -105,31 +132,26 @@ pipeline {
                                 ).trim()
                             }
 
-                            echo "Latest commit: ${commit}"
+                            echo "Latest commit: " + commit
 
-                            // 🔥 FIXED PATH
-                            def buildState = "/u01/jenkins/jenkins/build-state/${app}/${envName}.commit"
+                            def buildState = "/u01/jenkins/jenkins/build-state/" + app + "/" + envName + ".commit"
 
                             def lastBuilt = sh(
-                                script: "[ -f ${buildState} ] && cat ${buildState} || echo none",
+                                script: "[ -f " + buildState + " ] && cat " + buildState + " || echo none",
                                 returnStdout: true
                             ).trim()
 
-                            echo "Last built: ${lastBuilt}"
-
-                            // 🔥 CRITICAL CHECK
                             if (commit == lastBuilt) {
                                 echo "⏭️ Already built → skipping"
                                 return
                             }
 
                             gchatNotify(
-                                "Triggering ${app} | ${branch} → ${envName}",
+                                "Triggering " + app + " " + branch,
                                 app,
                                 envName
                             )
 
-                            // 🔷 Trigger
                             if (envName == 'dev') {
 
                                 build job: 'Build-Pipeline',
@@ -147,7 +169,8 @@ pipeline {
                                     parameters: [
                                         string(name: 'APP_NAME', value: app),
                                         string(name: 'TARGET_ENV', value: envName),
-                                        string(name: 'COMMIT_HASH', value: commit)
+                                        string(name: 'COMMIT_FULL', value: commit),
+                                        string(name: 'VERSION', value: "latest")
                                     ]
                             }
                         }
