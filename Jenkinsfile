@@ -4,6 +4,7 @@ pipeline {
     agent any
 
     triggers {
+        githubPush()
         cron('H/2 * * * *')   // 🔥 every 2 mins (good for testing)
     }
 
