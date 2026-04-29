@@ -3,14 +3,7 @@
 pipeline {
     agent any
 
-    triggers { 
-        githubPush()        
-    }
-
-    // triggers { 
-    //     githubPush()
-    //     cron('H/30 * * * *') 
-    // }
+    triggers { cron('H/30 * * * *') }
 
     options {
         disableConcurrentBuilds(abortPrevious: true)
@@ -27,71 +20,39 @@ pipeline {
         stage('Start') {
             steps {
                 script {
-                    gchatNotify(
-                                "Orchestrator Started" 
-                            )
+                    gchatNotify("🚀 Orchestrator started")
                 }
             }
         }
 
-        // 🔷 1. Load Mapping
         stage('Load Mapping') {
             steps {
                 script {
-                    
                     dir('env-control') {
                         deleteDir()
-
-                        git url: CONTROL_REPO,
-                            branch: 'main',
-                            credentialsId: 'github-token'
+                        git url: CONTROL_REPO, branch: 'main', credentialsId: 'github-token'
                     }
 
                     def config = readYaml file: 'env-control/mappings/current.yaml'
 
                     if (!config?.mappings) {
-                        error "❌ mappings missing in YAML"
+                        error "❌ mappings missing"
                     }
 
-                    // ✅ SAFE serialization
                     env.MAP = groovy.json.JsonOutput.toJson(config.mappings)
-
-                    echo "📄 Mapping loaded:"
-                    echo env.MAP
                 }
             }
         }
 
-        stage('Load Notifications') {
-            steps {
-                script {
-
-                    def notifConfig = readYaml file: 'env-control/mappings/notifications.yaml'
-
-                    if (!notifConfig?.notifications) {
-                        error "❌ notifications missing"
-                    }
-
-                    env.NOTIFY_MAP = groovy.json.JsonOutput.toJson(notifConfig.notifications)
-
-                    echo "📢 Notification mapping loaded"
-                }
-            }
-        }    
-
-        // 🔷 2. Process
         stage('Process') {
             steps {
                 script {
 
-                    def notifyMap = readJSON text: env.NOTIFY_MAP
                     def parsed = readJSON text: env.MAP
-
                     def jobs = [:]
 
                     parsed.each { key, value ->
 
-                        // ✅ define first
                         def app     = value.app.toString()
                         def repo    = value.repo.toString()
                         def branch  = value.branch.toString()
@@ -100,17 +61,6 @@ pipeline {
                         jobs[key] = {
 
                             echo "🚀 " + app + " | " + branch + " → " + envName
-
-                            // ✅ NOW safe to use
-                            def credentialId = notifyMap[app] != null ? notifyMap[app][envName] : null
-
-                            if (credentialId == null) {
-                                credentialId = notifyMap['default']
-                            }
-
-                            echo "Using webhook: " + credentialId
-
-                            // (for now just log, don’t use it yet)
 
                             def commit
 
@@ -132,23 +82,19 @@ pipeline {
                                 ).trim()
                             }
 
-                            echo "Latest commit: " + commit
-
-                            def buildState = "/u01/jenkins/jenkins/build-state/" + app + "/" + envName + ".commit"
+                            def stateFile = "/u01/jenkins/jenkins/build-state/" + app + "/" + envName + ".commit"
 
                             def lastBuilt = sh(
-                                script: "[ -f " + buildState + " ] && cat " + buildState + " || echo none",
+                                script: "[ -f " + stateFile + " ] && cat " + stateFile + " || echo none",
                                 returnStdout: true
                             ).trim()
 
                             if (commit == lastBuilt) {
-                                echo "⏭️ Already built → skipping"
+                                echo "⏭️ Skipping (no change)"
                                 return
                             }
 
-                            gchatNotify(
-                                "[" + app + "] Triggering " + branch + " → " + envName
-                            )
+                            gchatNotify("[" + app + "] Trigger " + branch + " → " + envName)
 
                             if (envName == 'dev') {
 
