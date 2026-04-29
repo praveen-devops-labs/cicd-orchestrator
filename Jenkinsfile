@@ -3,7 +3,14 @@
 pipeline {
     agent any
 
-    triggers { cron('H/30 * * * *') }
+    triggers { 
+        githubPush()        
+    }
+
+    // triggers { 
+    //     githubPush()
+    //     cron('H/30 * * * *') 
+    // }
 
     options {
         disableConcurrentBuilds(abortPrevious: true)
@@ -108,14 +115,8 @@ pipeline {
 
                             } else {
 
-                                build job: 'Deploy-Pipeline',
-                                    wait: false,
-                                    parameters: [
-                                        string(name: 'APP_NAME', value: app),
-                                        string(name: 'TARGET_ENV', value: envName),
-                                        string(name: 'COMMIT_FULL', value: commit),
-                                        string(name: 'VERSION', value: "latest")
-                                    ]
+                                echo "⏭️ Skipping " + envName + " (handled via promotion pipeline)"
+
                             }
                         }
                     }
