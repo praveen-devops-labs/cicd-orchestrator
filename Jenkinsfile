@@ -147,9 +147,7 @@ pipeline {
                             }
 
                             gchatNotify(
-                                "Triggering " + app + " " + branch,
-                                app,
-                                envName
+                                "[" + app + "] Triggering " + branch + " → " + envName
                             )
 
                             if (envName == 'dev') {
