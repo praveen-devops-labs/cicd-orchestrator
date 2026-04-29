@@ -58,6 +58,13 @@ pipeline {
                     def parsed = readJSON text: env.MAP
                     def jobs = [:]
 
+                    // 🔥 Detect changed repo + branch (from Jenkins env)
+                    def changedRepo   = env.GIT_URL ?: ""
+                    def changedBranch = env.GIT_BRANCH ?: ""
+
+                    echo "🔍 Changed Repo   : " + changedRepo
+                    echo "🔍 Changed Branch : " + changedBranch
+
                     parsed.each { key, value ->
 
                         def app     = value.app.toString()
@@ -65,9 +72,17 @@ pipeline {
                         def branch  = value.branch.toString()
                         def envName = value.env.toString()
 
+                        // 🔥 FILTER (CRITICAL)
+                        if (!(changedRepo.contains(repo.split('/').last().replace('.git','')) 
+                            && changedBranch.contains(branch))) {
+
+                            echo "⏭️ Ignoring " + app + " (" + branch + ")"
+                            return
+                        }
+
                         jobs[key] = {
 
-                            echo "🚀 " + app + " | " + branch + " → " + envName
+                            echo "🚀 Processing " + app + " | " + branch
 
                             def commit
 
@@ -89,7 +104,7 @@ pipeline {
                                 ).trim()
                             }
 
-                            def stateFile = "/u01/jenkins/jenkins/build-state/" + app + "/" + envName + ".commit"
+                            def stateFile = "/u01/jenkins/jenkins/build-state/" + app + "/dev.commit"
 
                             def lastBuilt = sh(
                                 script: "[ -f " + stateFile + " ] && cat " + stateFile + " || echo none",
@@ -97,11 +112,9 @@ pipeline {
                             ).trim()
 
                             if (commit == lastBuilt) {
-                                echo "⏭️ Skipping (no change)"
+                                echo "⏭️ Already built → skipping"
                                 return
                             }
-
-                            gchatNotify("[" + app + "] Trigger " + branch + " → " + envName)
 
                             if (envName == 'dev') {
 
@@ -114,14 +127,16 @@ pipeline {
                                     ]
 
                             } else {
-
-                                echo "⏭️ Skipping " + envName + " (handled via promotion pipeline)"
-
+                                echo "⏭️ Skipping " + envName
                             }
                         }
                     }
 
-                    parallel jobs
+                    if (jobs.isEmpty()) {
+                        echo "⏭️ No matching changes"
+                    } else {
+                        parallel jobs
+                    }
                 }
             }
         }
