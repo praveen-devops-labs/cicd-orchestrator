@@ -4,7 +4,7 @@ pipeline {
     agent any
 
     triggers {
-        cron('H/30 * * * *')  // polling (temporary)
+        cron('H/5 * * * *')  // polling (temporary)
     }
 
     options {
