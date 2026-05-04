@@ -4,7 +4,7 @@ pipeline {
     agent any
 
     triggers {
-        cron('H/5 * * * *')  // polling (temporary)
+        cron('H/30 * * * *')  // polling (temporary)
     }
 
     options {
@@ -138,7 +138,7 @@ pipeline {
                     if (!changesDetected) {
                         echo "⏭️ No changes across all repos"
                         currentBuild.description = "No changes"
-                        notify(app: app, env: "dev", msg: "NO CHANGES")
+                        notify(app: "orchestrator", env: "dev", msg: "NO CHANGES")
                         return
                     }
 
