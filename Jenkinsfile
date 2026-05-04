@@ -24,7 +24,7 @@ pipeline {
         stage('Start') {
             steps {
                 script {
-                    gchatNotify("🚀 Orchestrator started")
+                    notify(app: "orchestrator", env: "dev", msg: "STARTED")
                 }
             }
         }
@@ -106,10 +106,10 @@ pipeline {
                         ).trim()
 
                         echo """
-🔍 ${app} (${branch})
-   Latest : ${commit}
-   Last   : ${lastBuilt}
-"""
+                        ${app} (${branch})
+                        Latest : ${commit}
+                        Last   : ${lastBuilt}
+                        """
 
                         if (commit == lastBuilt) {
                             echo "⏭️ No changes → ${app}"
@@ -123,7 +123,7 @@ pipeline {
 
                             echo "🚀 Triggering ${app}"
 
-                            gchatNotify("🚀 ${app} → dev")
+                            notify(app: app, env: "dev", msg: "TRIGGER BUILD (${branch})")
 
                             build job: 'Build-Pipeline',
                                 wait: false,
@@ -138,6 +138,7 @@ pipeline {
                     if (!changesDetected) {
                         echo "⏭️ No changes across all repos"
                         currentBuild.description = "No changes"
+                        notify(app: app, env: "dev", msg: "NO CHANGES")
                         return
                     }
 
@@ -155,10 +156,10 @@ pipeline {
 
     post {
         success {
-            echo "✅ Orchestrator completed"
+            notify(app: "orchestrator", env: "dev", msg: "COMPLETED")
         }
         failure {
-            echo "❌ Orchestrator failed"
+            notify(app: "orchestrator", env: "dev", msg: "FAILED ❌")
         }
     }
 }
