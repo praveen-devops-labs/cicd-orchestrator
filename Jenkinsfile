@@ -66,6 +66,10 @@ pipeline {
 
                     parsed.each { key, value ->
 
+                        if (key == "docker") {
+                            return
+                        }
+
                         if (!value.registry_repo) {
                             error "❌ registry_repo missing for ${key}"
                         }
@@ -99,7 +103,7 @@ pipeline {
                             return
                         }
 
-                        def stateFile = ""${env.STATE_DIR}/${app}/${envName}.commit""
+                        def stateFile = "${env.STATE_DIR}/${app}/${envName}.commit"
 
                         def lastBuilt = sh(
                             script: "[ -f ${stateFile} ] && cat ${stateFile} || echo none",
@@ -123,7 +127,7 @@ pipeline {
                         changesDetected = true
 
                         // 🔥 Parallel job trigger
-                        jobs[app] = {
+                        jobs["${app}-${envName}"] = {
 
                             echo "🚀 Triggering ${app}"
 
