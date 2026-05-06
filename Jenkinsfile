@@ -24,7 +24,7 @@ pipeline {
         stage('Start') {
             steps {
                 script {
-                    notify(app: "orchestrator", env: "dev", msg: "STARTED")
+                    notify(app: "orchestrator", env: "orchestrator", msg: "STARTED")
                 }
             }
         }
@@ -40,7 +40,7 @@ pipeline {
                         git url: env.CONTROL_REPO,
                             branch: 'main',
                             credentialsId: 'github-token'
-                    }
+                    }                    
 
                     def config = readYaml file: 'env-control/mappings/current.yaml'
 
@@ -66,15 +66,16 @@ pipeline {
 
                     parsed.each { key, value ->
 
+                        if (!value.registry_repo) {
+                            error "❌ registry_repo missing for ${key}"
+                        }
+
                         def app     = value.app.toString()
                         def repo    = value.repo.toString()
                         def branch  = value.branch.toString()
                         def envName = value.env.toString()
+                        def registryRepo = value.registry_repo.toString()
 
-                        // 🔥 Only DEV
-                        if (envName != 'dev') {
-                            return
-                        }
 
                         def commit = ""
 
@@ -98,7 +99,7 @@ pipeline {
                             return
                         }
 
-                        def stateFile = "${env.STATE_DIR}/${app}/dev.commit"
+                        def stateFile = ""${env.STATE_DIR}/${app}/${envName}.commit""
 
                         def lastBuilt = sh(
                             script: "[ -f ${stateFile} ] && cat ${stateFile} || echo none",
@@ -106,9 +107,12 @@ pipeline {
                         ).trim()
 
                         echo """
-                        ${app} (${branch})
-                        Latest : ${commit}
-                        Last   : ${lastBuilt}
+                        ${app}
+                        Branch   : ${branch}
+                        Env      : ${envName}
+                        Registry : ${registryRepo}
+                        Latest   : ${commit}
+                        Last     : ${lastBuilt}
                         """
 
                         if (commit == lastBuilt) {
@@ -123,22 +127,28 @@ pipeline {
 
                             echo "🚀 Triggering ${app}"
 
-                            notify(app: app, env: "dev", msg: "TRIGGER BUILD (${branch})")
+                            notify(
+                                app: app,
+                                env: envName,
+                                msg: "TRIGGER BUILD (${branch})"
+                            )
 
                             build job: 'Build-Pipeline',
-                                wait: false,
-                                parameters: [
-                                    string(name: 'APP_NAME', value: app),
-                                    string(name: 'REPO_URL', value: repo),
-                                    string(name: 'BRANCH_NAME', value: branch)
-                                ]
+                            wait: false,
+                            parameters: [
+                                string(name: 'APP_NAME', value: app),
+                                string(name: 'REPO_URL', value: repo),
+                                string(name: 'BRANCH_NAME', value: branch),
+                                string(name: 'TARGET_ENV', value: envName),
+                                string(name: 'REGISTRY_REPO', value: registryRepo)
+                            ]
                         }
                     }
 
                     if (!changesDetected) {
                         echo "⏭️ No changes across all repos"
                         currentBuild.description = "No changes"
-                        notify(app: "orchestrator", env: "dev", msg: "NO CHANGES")
+                        notify(app: "orchestrator", env: "orchestrator", msg: "NO CHANGES")
                         return
                     }
 
@@ -147,7 +157,7 @@ pipeline {
                         return
                     }
 
-                    echo "🚀 Running parallel builds: ${jobs.keySet()}"
+                    echo "Running parallel builds: ${jobs.keySet()}"
                     parallel jobs
                 }
             }
@@ -156,10 +166,10 @@ pipeline {
 
     post {
         success {
-            notify(app: "orchestrator", env: "dev", msg: "COMPLETED")
+            notify(app: "orchestrator", env: "orchestrator", msg: "COMPLETED")
         }
         failure {
-            notify(app: "orchestrator", env: "dev", msg: "FAILED ❌")
+            notify(app: "orchestrator", env: "orchestrator", msg: "FAILED ❌")
         }
     }
 }
