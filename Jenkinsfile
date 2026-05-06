@@ -63,6 +63,7 @@ pipeline {
                     def parsed = readJSON text: env.MAP
                     def jobs = [:]
                     def changesDetected = false
+                    def seen = []
 
                     parsed.each { key, value ->
 
@@ -71,14 +72,30 @@ pipeline {
                         }
 
                         if (!value.registry_repo) {
-                            error "❌ registry_repo missing for ${key}"
+
+                            echo """
+                        ❌ Invalid mapping
+
+                        Key : ${key}
+
+                        registry_repo missing
+                        """
+
+                            return
                         }
 
                         def app     = value.app.toString()
                         def repo    = value.repo.toString()
                         def branch  = value.branch.toString()
+                        def id = "${repo}:${branch}"
+
+                        if (seen.contains(id)) {
+                            error "❌ Duplicate mapping detected → ${id}"
+                        }
+
+                        seen << id
                         def envName = value.env.toString()
-                        def registryRepo = value.registry_repo.toString()
+                        def registryRepo = value.registry_repo.toString()                        
 
 
                         def commit = ""
@@ -160,6 +177,9 @@ pipeline {
                         echo "⚠️ No jobs to run"
                         return
                     }
+
+                    currentBuild.description =
+                        "Triggered: ${jobs.keySet().join(', ')}"
 
                     echo "Running parallel builds: ${jobs.keySet()}"
                     parallel jobs
