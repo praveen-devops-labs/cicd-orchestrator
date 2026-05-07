@@ -83,6 +83,33 @@ pipeline {
 
                             return
                         }
+                        
+                        if (!value.namespace) {
+
+                            echo """
+                            ❌ Invalid mapping
+
+                            Key : ${key}
+
+                            namespace missing
+                            """
+
+                            return
+                        }
+
+                        if (!value.workload) {
+
+                            echo """
+                            ❌ Invalid mapping
+
+                            Key : ${key}
+
+                            workload missing
+                            """
+
+                            return
+                        }
+
 
                         def app     = value.app.toString()
                         def repo    = value.repo.toString()
@@ -95,7 +122,10 @@ pipeline {
 
                         seen << id
                         def envName = value.env.toString()
-                        def registryRepo = value.registry_repo.toString()                        
+                        def registryRepo = value.registry_repo.toString()
+                        def namespace = value.namespace.toString()
+                        def workload  = value.workload.toString()
+                        
 
 
                         def commit = ""
@@ -161,7 +191,9 @@ pipeline {
                                 string(name: 'REPO_URL', value: repo),
                                 string(name: 'BRANCH_NAME', value: branch),
                                 string(name: 'TARGET_ENV', value: envName),
-                                string(name: 'REGISTRY_REPO', value: registryRepo)
+                                string(name: 'REGISTRY_REPO', value: registryRepo),
+                                string(name: 'NAMESPACE', value: namespace),
+                                string(name: 'WORKLOAD', value: workload)
                             ]
                         }
                     }
