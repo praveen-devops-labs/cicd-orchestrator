@@ -1,5 +1,5 @@
 @Library('cicd-library') _
-
+import org.jenkinsci.plugins.gwt.GenericTrigger
 pipeline {
     agent any
 
