@@ -4,7 +4,13 @@ pipeline {
     agent any
 
     triggers {
-        cron('H/30 * * * *')  // polling (temporary)
+        GenericTrigger(
+            token: 'orchestrator-trigger',
+            printContributedVariables: true,
+            printPostContent: true,
+            silentResponse: false
+        )
+        // cron('H/30 * * * *')
     }
 
     options {
