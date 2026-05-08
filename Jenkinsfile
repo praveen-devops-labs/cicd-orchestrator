@@ -5,12 +5,9 @@ pipeline {
 
     triggers {
         GenericTrigger(
-            token: 'orchestrator-trigger',
-            printContributedVariables: true,
-            printPostContent: true,
-            silentResponse: false
+            token: 'orchestrator-trigger'            
         )
-        // cron('H/30 * * * *')
+       cron('H/30 8-9,13-14,18-19 * * *')
     }
 
     options {
