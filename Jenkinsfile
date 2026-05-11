@@ -21,16 +21,7 @@ pipeline {
         STATE_DIR    = "/u01/jenkins/jenkins/build-state"
     }
 
-    stages {
-
-        // 🔷 Start
-        stage('Start') {
-            steps {
-                script {
-                    notify(app: "orchestrator", env: "orchestrator", msg: "STARTED")
-                }
-            }
-        }
+    stages {        
 
         // 🔷 Load Mapping
         stage('Load Mapping') {
@@ -38,26 +29,42 @@ pipeline {
                 script {
 
                     dir('env-control') {
+
                         deleteDir()
 
-                        git url: env.CONTROL_REPO,
+                        git(
+                            url: env.CONTROL_REPO,
                             branch: 'main',
                             credentialsId: 'github-token'
-                    }                    
+                        )
+                    }
 
-                    def config = readYaml file: 'env-control/mappings/current.yaml'
+                    def config = readYaml(
+                        file: 'env-control/mappings/current.yaml'
+                    )
 
                     if (!config?.mappings) {
                         error "❌ mappings missing in YAML"
                     }
 
-                    env.MAP = groovy.json.JsonOutput.toJson(config.mappings)
+                    def notifyConfig = readYaml(
+                        file: 'env-control/mappings/notifications.yaml'
+                    )
+
+                    env.MAP = groovy.json.JsonOutput.toJson(
+                        config.mappings
+                    )
+
+                    env.NOTIFY_MAP =
+                        groovy.json.JsonOutput.toJson(
+                            notifyConfig.notifications
+                        )
 
                     echo "📄 Mapping loaded"
                 }
             }
         }
-
+        
         // 🔷 Process (Polling + Trigger)
         stage('Process') {
             steps {
@@ -70,9 +77,9 @@ pipeline {
 
                     parsed.each { key, value ->
 
-                        if (key == "docker") {
-                            return
-                        }
+                        // if (key == "docker") {
+                        //     return
+                        // }
 
                         if (!value.registry_repo) {
 
@@ -184,7 +191,8 @@ pipeline {
                             notify(
                                 app: app,
                                 env: envName,
-                                msg: "TRIGGER BUILD (${branch})"
+                                msg: "DEPLOYMENT REQUEST (${branch})",
+                                commit: commit
                             )
 
                             build job: 'Build-Pipeline',
@@ -195,16 +203,15 @@ pipeline {
                                 string(name: 'BRANCH_NAME', value: branch),
                                 string(name: 'TARGET_ENV', value: envName),
                                 string(name: 'REGISTRY_REPO', value: registryRepo),
-                                string(name: 'NAMESPACE', value: namespace),
-                                string(name: 'WORKLOAD', value: workload)
+                                // string(name: 'NAMESPACE', value: namespace),
+                                // string(name: 'WORKLOAD', value: workload)
                             ]
                         }
                     }
 
                     if (!changesDetected) {
                         echo "⏭️ No changes across all repos"
-                        currentBuild.description = "No changes"
-                        notify(app: "orchestrator", env: "orchestrator", msg: "NO CHANGES")
+                        currentBuild.description = "No changes"                       
                         return
                     }
 
@@ -224,14 +231,253 @@ pipeline {
     }
 
     post {
-        success {
-            notify(app: "orchestrator", env: "orchestrator", msg: "COMPLETED")
-        }
-        failure {
-            notify(app: "orchestrator", env: "orchestrator", msg: "FAILED ❌")
-        }
+    failure {
+        notify(
+            app: "orchestrator",
+            env: "orchestrator",
+            msg: "FAILED ❌"
+        )
     }
 }
+
+
+
+
+
+// @Library('cicd-library') _
+// import org.jenkinsci.plugins.gwt.GenericTrigger
+// pipeline {
+//     agent any
+
+//     triggers {
+//         GenericTrigger(
+//             token: 'orchestrator-trigger'            
+//         )
+//        cron('H/30 8-9,13-14,18-19 * * *')
+//     }
+
+//     options {
+//         disableConcurrentBuilds(abortPrevious: false) // ✅ allow parallel runs
+//         buildDiscarder(logRotator(numToKeepStr: '5'))
+//         timestamps()
+//     }
+
+//     environment {
+//         CONTROL_REPO = "https://github.com/praveen-devops-labs/env-control-repo.git"
+//         STATE_DIR    = "/u01/jenkins/jenkins/build-state"
+//     }
+
+//     stages {
+
+//         // 🔷 Start
+//         stage('Start') {
+//             steps {
+//                 script {
+//                     notify(app: "orchestrator", env: "orchestrator", msg: "STARTED")
+//                 }
+//             }
+//         }
+
+//         // 🔷 Load Mapping
+//         stage('Load Mapping') {
+//             steps {
+//                 script {
+
+//                     dir('env-control') {
+//                         deleteDir()
+
+//                         git url: env.CONTROL_REPO,
+//                             branch: 'main',
+//                             credentialsId: 'github-token'
+//                     }                    
+
+//                     def config = readYaml file: 'env-control/mappings/current.yaml'
+
+//                     if (!config?.mappings) {
+//                         error "❌ mappings missing in YAML"
+//                     }
+
+//                     env.MAP = groovy.json.JsonOutput.toJson(config.mappings)
+
+//                     echo "📄 Mapping loaded"
+//                 }
+//             }
+//         }
+
+//         // 🔷 Process (Polling + Trigger)
+//         stage('Process') {
+//             steps {
+//                 script {
+
+//                     def parsed = readJSON text: env.MAP
+//                     def jobs = [:]
+//                     def changesDetected = false
+//                     def seen = []
+
+//                     parsed.each { key, value ->
+
+//                         if (key == "docker") {
+//                             return
+//                         }
+
+//                         if (!value.registry_repo) {
+
+//                             echo """
+//                         ❌ Invalid mapping
+
+//                         Key : ${key}
+
+//                         registry_repo missing
+//                         """
+
+//                             return
+//                         }
+                        
+//                         if (!value.namespace) {
+
+//                             echo """
+//                             ❌ Invalid mapping
+
+//                             Key : ${key}
+
+//                             namespace missing
+//                             """
+
+//                             return
+//                         }
+
+//                         if (!value.workload) {
+
+//                             echo """
+//                             ❌ Invalid mapping
+
+//                             Key : ${key}
+
+//                             workload missing
+//                             """
+
+//                             return
+//                         }
+
+
+//                         def app     = value.app.toString()
+//                         def repo    = value.repo.toString()
+//                         def branch  = value.branch.toString()
+//                         def id = "${repo}:${branch}"
+
+//                         if (seen.contains(id)) {
+//                             error "❌ Duplicate mapping detected → ${id}"
+//                         }
+
+//                         seen << id
+//                         def envName = value.env.toString()
+//                         def registryRepo = value.registry_repo.toString()
+//                         def namespace = value.namespace.toString()
+//                         def workload  = value.workload.toString()
+                        
+
+
+//                         def commit = ""
+
+//                         // ✅ SAFE credential usage (no interpolation warning)
+//                         withCredentials([usernamePassword(
+//                             credentialsId: 'github-token',
+//                             usernameVariable: 'GIT_USER',
+//                             passwordVariable: 'GIT_PASS'
+//                         )]) {
+
+//                             commit = sh(
+//                                 script: '''
+//                                 git ls-remote https://$GIT_USER:$GIT_PASS@''' + repo.replace('https://','') + ''' refs/heads/''' + branch + ''' | cut -f1
+//                                 ''',
+//                                 returnStdout: true
+//                             ).trim()
+//                         }
+
+//                         if (!commit) {
+//                             echo "⚠️ Cannot fetch commit for ${app}"
+//                             return
+//                         }
+
+//                         def stateFile = "${env.STATE_DIR}/${app}/${envName}.commit"
+
+//                         def lastBuilt = sh(
+//                             script: "[ -f ${stateFile} ] && cat ${stateFile} || echo none",
+//                             returnStdout: true
+//                         ).trim()
+
+//                         echo """
+//                         ${app}
+//                         Branch   : ${branch}
+//                         Env      : ${envName}
+//                         Registry : ${registryRepo}
+//                         Latest   : ${commit}
+//                         Last     : ${lastBuilt}
+//                         """
+
+//                         if (commit == lastBuilt) {
+//                             echo "⏭️ No changes → ${app}"
+//                             return
+//                         }
+
+//                         changesDetected = true
+
+//                         // 🔥 Parallel job trigger
+//                         jobs["${app}-${envName}"] = {
+
+//                             echo "🚀 Triggering ${app}"
+
+//                             notify(
+//                                 app: app,
+//                                 env: envName,
+//                                 msg: "TRIGGER BUILD (${branch})"
+//                             )
+
+//                             build job: 'Build-Pipeline',
+//                             wait: false,
+//                             parameters: [
+//                                 string(name: 'APP_NAME', value: app),
+//                                 string(name: 'REPO_URL', value: repo),
+//                                 string(name: 'BRANCH_NAME', value: branch),
+//                                 string(name: 'TARGET_ENV', value: envName),
+//                                 string(name: 'REGISTRY_REPO', value: registryRepo),
+//                                 string(name: 'NAMESPACE', value: namespace),
+//                                 string(name: 'WORKLOAD', value: workload)
+//                             ]
+//                         }
+//                     }
+
+//                     if (!changesDetected) {
+//                         echo "⏭️ No changes across all repos"
+//                         currentBuild.description = "No changes"
+//                         notify(app: "orchestrator", env: "orchestrator", msg: "NO CHANGES")
+//                         return
+//                     }
+
+//                     if (jobs.isEmpty()) {
+//                         echo "⚠️ No jobs to run"
+//                         return
+//                     }
+
+//                     currentBuild.description =
+//                         "Triggered: ${jobs.keySet().join(', ')}"
+
+//                     echo "Running parallel builds: ${jobs.keySet()}"
+//                     parallel jobs
+//                 }
+//             }
+//         }
+//     }
+
+//     post {
+//         success {
+//             notify(app: "APP_NAME", env: "TARGET_ENV", msg: "COMPLETED")
+//         }
+//         failure {
+//             notify(app: "orchestrator", env: "orchestrator", msg: "FAILED ❌")
+//         }
+//     }
+// }
 
 
 
