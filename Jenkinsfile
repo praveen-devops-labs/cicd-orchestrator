@@ -70,7 +70,7 @@ pipeline {
             steps {
                 script {
 
-                    def parsed = readJSON text: env.MAP
+                    def parsed = new groovy.json.JsonSlurperClassic().parseText(env.MAP)
                     def jobs = [:]
                     def changesDetected = false
                     def seen = []
@@ -133,8 +133,8 @@ pipeline {
                         seen << id
                         def envName = value.env.toString()
                         def registryRepo = value.registry_repo.toString()
-                        def namespace = value.namespace.toString()
-                        def workload  = value.workload.toString()
+                        // def namespace = value.namespace.toString()
+                        // def workload  = value.workload.toString()
                         
 
 
