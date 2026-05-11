@@ -230,16 +230,16 @@ pipeline {
         }
     }
 
-    post {
-    failure {
-        notify(
-            app: "orchestrator",
-            env: "orchestrator",
-            msg: "FAILED ❌"
-        )
+        post {
+        failure {
+            notify(
+                app: "orchestrator",
+                env: "orchestrator",
+                msg: "FAILED ❌"
+            )
+        }
     }
 }
-
 
 
 
