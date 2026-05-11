@@ -70,7 +70,10 @@ pipeline {
             steps {
                 script {
 
-                    def parsed = new groovy.json.JsonSlurperClassic().parseText(env.MAP)
+                    def parsed = readJSON(
+                        text: env.MAP,
+                        returnPojo: true
+                    )
                     def jobs = [:]
                     def changesDetected = false
                     def seen = []
