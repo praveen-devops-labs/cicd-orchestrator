@@ -1,0 +1,290 @@
+@Library('cicd-library') _
+
+pipeline {
+
+    agent any
+
+    parameters {
+        string(name: 'APP_NAME')
+        string(name: 'TARGET_ENV')
+        string(name: 'COMMIT_FULL')
+        string(name: 'VERSION')
+    }
+
+    options {
+
+        disableConcurrentBuilds(
+            abortPrevious: true
+        )
+
+        buildDiscarder(
+            logRotator(numToKeepStr: '10')
+        )
+
+        timestamps()
+    }
+
+    environment {
+        DEPLOY_HISTORY_DIR =
+        "/u01/jenkins/jenkins/deploy-history"
+    }
+
+    stages {
+
+        stage('Init') {
+
+            steps {
+
+                deleteDir()
+
+                echo """
+                =====================================
+                Workspace Cleaned
+                =====================================
+                """
+            }
+        }
+
+        stage('Load Mapping') {
+
+            steps {
+
+                script {
+
+                     echo """
+                    =====================================
+                    Loading Deployment Mapping
+                    =====================================
+
+                    APP : ${params.APP_NAME}
+                    ENV : ${params.TARGET_ENV}
+                    """                    
+                    
+                    def config =
+                    loadConfig(
+                        params.APP_NAME,
+                        params.TARGET_ENV
+                    )
+
+                    def mapping =
+                    config.mapping           
+
+
+                    env.DEPLOY_ENV =
+                    mapping.env.toString()
+
+                    env.NAMESPACE =
+                    mapping.namespace.toString()
+
+                    env.WORKLOAD =
+                    mapping.workload.toString()
+
+                    env.IMAGE =
+                    "${mapping.registry}/${mapping.image_repo}:${params.VERSION}"
+
+                    echo """
+                    =====================================
+                    Deployment Mapping
+                    =====================================
+
+                    IMAGE      : ${env.IMAGE}
+                    ENV        : ${env.DEPLOY_ENV}
+                    NAMESPACE  : ${env.NAMESPACE}
+                    WORKLOAD   : ${env.WORKLOAD}
+                    """
+                }
+            }
+        }
+
+        stage('Verify Image') {
+
+            steps {
+
+                script {
+
+                    echo """
+                    =====================================
+                    Verifying Image
+                    =====================================
+
+                    IMAGE : ${env.IMAGE}
+                    """
+
+                    sh """
+                    gcloud auth configure-docker \
+                    us-central1-docker.pkg.dev \
+                    --quiet
+
+                    docker pull ${env.IMAGE}
+                    """
+
+                    echo """
+                    ✅ Image Verified
+                    """
+                }
+            }
+        }
+
+        stage('Deploy') {
+
+            steps {
+
+                script {
+
+                    stageExec(
+                        params.APP_NAME,
+                        params.TARGET_ENV,
+                        "DEPLOY"
+                    ) {
+
+                        writeFile(
+                            file: 'deploy.sh',
+                            text: libraryResource(
+                                'scripts/deploy.sh'
+                            )
+                        )
+
+                        sh 'chmod +x deploy.sh'
+
+                        sh """
+                        ./deploy.sh \
+                        ${env.DEPLOY_ENV} \
+                        ${env.IMAGE} \
+                        ${params.APP_NAME} \
+                        ${env.NAMESPACE} \
+                        ${env.WORKLOAD}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Verify Rollout') {
+
+            steps {
+
+                script {
+
+                    echo """
+                    =====================================
+                    Verifying Rollout
+                    =====================================
+
+                    WORKLOAD  : ${env.WORKLOAD}
+                    NAMESPACE : ${env.NAMESPACE}
+                    """
+
+                    sh """
+                    kubectl rollout status \
+                    deployment/${env.WORKLOAD} \
+                    -n ${env.NAMESPACE} \
+                    --timeout=300s
+                    """
+
+                    echo """
+                    ✅ Rollout Successful
+                    """
+                }
+            }
+        }
+
+        stage('Deployment History') {
+
+            steps {
+
+                script {
+
+                    echo """
+                    =====================================
+                    Recording Deployment History
+                    =====================================
+                    """
+
+                    deployHistory([
+
+                        app: params.APP_NAME,
+                        env: env.DEPLOY_ENV,
+                        namespace: env.NAMESPACE,
+                        workload: env.WORKLOAD,
+                        commit: params.COMMIT_FULL,
+                        version: params.VERSION,
+                        image: env.IMAGE,
+                        build: env.BUILD_NUMBER,
+                        type: "DEPLOY"
+                    ])
+
+                    echo """
+                    ✅ Deployment History Recorded
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+
+        success {
+
+            script {
+
+                echo """
+                =====================================
+                ✅ DEPLOY SUCCESS
+                =====================================
+
+                APP      : ${params.APP_NAME}
+                VERSION  : ${params.VERSION}
+                IMAGE    : ${env.IMAGE}
+                ENV      : ${params.TARGET_ENV}
+                """
+
+                notify(
+                    app: params.APP_NAME,
+                    env: params.TARGET_ENV,
+                    msg: "DEPLOY SUCCESS",
+                    version: params.VERSION,
+                    commit: params.COMMIT_FULL,
+                    image: env.IMAGE
+                )
+            }
+        }
+
+        failure {
+
+            script {
+
+                echo """
+                =====================================
+                ❌ DEPLOY FAILED
+                =====================================
+
+                APP      : ${params.APP_NAME}
+                VERSION  : ${params.VERSION}
+                IMAGE    : ${env.IMAGE}
+                ENV      : ${params.TARGET_ENV}
+                """
+
+                notify(
+                    app: params.APP_NAME,
+                    env: params.TARGET_ENV,
+                    msg: "DEPLOY FAILED ❌",
+                    version: params.VERSION,
+                    commit: params.COMMIT_FULL,
+                    image: env.IMAGE
+                )
+            }
+        }
+
+        always {
+
+            script {
+
+                echo """
+                =====================================
+                DEPLOY PIPELINE COMPLETE
+                =====================================
+                """
+            }
+        }
+    }
+}
