@@ -1,0 +1,232 @@
+@Library('cicd-library') _
+
+/*
+|--------------------------------------------------------------------------
+| Files Pipeline
+|--------------------------------------------------------------------------
+|
+| Triggered by: Orchestrator — for any mapping entry containing
+|               generate_files and/or cdn_copy actions
+|
+| Timeline:
+|   [0 min ] File Versioning     ~1 min    (gsutil ls, counter increment)
+|   [1 min ] Angular + Gulp      ~15 min   (RAM-heavy: up to 25 GB)
+|   [16 min] CDN Copy            ~40 min   (network-heavy: ~2-4 GB RAM)
+|   [56 min] Cleanup             ~1 min
+|
+| Why a separate pipeline from Build-Pipeline:
+|   The orchestrator runs Build-Pipeline and Files-Pipeline in parallel.
+|   Build (WAR + Docker) is CPU/disk heavy.
+|   Angular build is RAM heavy.
+|   CDN copy is network heavy, low RAM.
+|   Separating them means the Jenkins agent scheduler queues them
+|   correctly and they do not compete for the same resources at the
+|   worst possible moment.
+|
+|--------------------------------------------------------------------------
+*/
+
+def hasAction(String action) {
+    if (!env.ACTIONS) { return false }
+    return env.ACTIONS.split(',').any { it.trim() == action }
+}
+
+pipeline {
+
+    agent {
+        label 'docker-builder'
+    }
+
+    parameters {
+        string(name: 'APP_NAME',    description: 'Logical app name  (e.g. app1, app2)')
+        string(name: 'TARGET_ENV',  description: 'Target environment (e.g. stag, uat)')
+        string(name: 'COMMIT_FULL', description: 'Full git commit SHA')
+    }
+
+    options {
+        disableConcurrentBuilds(abortPrevious: true)
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+    }
+
+    stages {
+
+        // ── Init ──────────────────────────────────────────────────────────
+        stage('Init') {
+            steps {
+                deleteDir()
+                echo """
+                =====================================
+                Workspace Cleaned
+                =====================================
+                """
+            }
+        }
+
+        // ── Load Config ───────────────────────────────────────────────────
+        stage('Load Config') {
+            steps {
+                script {
+
+                    echo """
+                    =====================================
+                    Loading Config
+                    =====================================
+
+                    APP : ${params.APP_NAME}
+                    ENV : ${params.TARGET_ENV}
+                    """
+
+                    def config  = loadConfig(params.APP_NAME, params.TARGET_ENV)
+                    def mapping = config.mapping
+                    def cdn     = config.cdn
+                    def vsn     = config.versioning
+
+                    env.ACTIONS     = config.actions.join(',')
+                    env.REPO_URL    = mapping.repo.toString()
+                    env.BRANCH_NAME = mapping.branch.toString()
+                    env.STATE_DIR   = vsn.state_dir.toString()
+
+                    // CDN fields — base URLs only, version is appended at runtime
+                    env.CDN_BUCKET = cdn.bucket?.toString()       ?: ''
+                    env.CDN_PATH   = cdn.path?.toString()         ?: ''
+                    env.CDN_KEEP   = cdn.keep_version?.toString() ?: '100'
+                    env.CDN_URL    = cdn.url?.toString()          ?: ''
+                    env.AWS_BUCKET = cdn.aws_bucket?.toString()   ?: ''
+                    env.AWS_URL    = cdn.aws_url?.toString()      ?: ''
+
+                    echo """
+                    =====================================
+                    Configuration Loaded
+                    =====================================
+
+                    ACTIONS    : ${env.ACTIONS}
+                    REPO       : ${env.REPO_URL}
+                    BRANCH     : ${env.BRANCH_NAME}
+                    CDN_BUCKET : ${env.CDN_BUCKET ?: '(not set)'}
+                    CDN_PATH   : ${env.CDN_PATH   ?: '(not set)'}
+                    CDN_KEEP   : ${env.CDN_KEEP}
+                    """
+                }
+            }
+        }
+
+        // ── Checkout App Repo ─────────────────────────────────────────────
+        stage('Checkout App Repo') {
+            steps {
+                echo """
+                =====================================
+                Checkout App Repository
+                =====================================
+
+                REPO   : ${env.REPO_URL}
+                BRANCH : ${env.BRANCH_NAME}
+                """
+                git(
+                    url:           env.REPO_URL,
+                    branch:        env.BRANCH_NAME,
+                    credentialsId: 'github-token'
+                )
+            }
+        }
+
+        // ── File Versioning ───────────────────────────────────────────────
+        // Runs first — FILE_VERSION must exist before Angular build and CDN copy
+        stage('File Versioning') {
+            when { expression { hasAction('cdn_copy') || hasAction('generate_files') } }
+            steps {
+                script {
+                    env.FILE_VERSION = incrementFileVersion(
+                        bucket: env.CDN_BUCKET
+                    )
+                    echo """
+                    =====================================
+                    FILE VERSION GENERATED
+                    =====================================
+
+                    VERSION : ${env.FILE_VERSION}
+                    """
+                }
+            }
+        }
+
+        // ── Generate Files (Angular + Gulp) ───────────────────────────────
+        // RAM-heavy — runs alone, nothing else in parallel at this point
+        stage('Generate Files') {
+            when { expression { hasAction('generate_files') } }
+            steps {
+                script {
+                    stageExec(params.APP_NAME, params.TARGET_ENV, 'FILE GENERATION') {
+                        generateFiles(
+                            app:     params.APP_NAME,
+                            env:     params.TARGET_ENV,
+                            version: env.FILE_VERSION
+                        )
+                    }
+                }
+            }
+        }
+
+        // ── Copy Files to GCP CDN ─────────────────────────────────────────
+        // Network-heavy, low RAM — safe to run after Angular build finishes
+        stage('Copy Files To GCP CDN') {
+            when { expression { hasAction('cdn_copy') } }
+            steps {
+                script {
+                    stageExec(params.APP_NAME, params.TARGET_ENV, 'GCP CDN COPY') {
+                        copyToGcpCdn(
+                            source:  'build-output/files',
+                            bucket:  env.CDN_BUCKET,
+                            path:    env.CDN_PATH,
+                            version: env.FILE_VERSION
+                        )
+                    }
+                }
+            }
+        }
+
+        // ── Cleanup Old CDN Versions ──────────────────────────────────────
+        stage('Cleanup Old CDN Versions') {
+            when { expression { hasAction('cdn_copy') } }
+            steps {
+                script {
+                    stageExec(params.APP_NAME, params.TARGET_ENV, 'CDN CLEANUP') {
+                        cleanupOldCdnVersions(
+                            bucket: "${env.CDN_BUCKET}/${env.CDN_PATH}",
+                            keep:   env.CDN_KEEP.toInteger()
+                        )
+                    }
+                }
+            }
+        }
+
+    } // end stages
+
+    post {
+        success {
+            echo """
+            =====================================
+            ✅ FILES PIPELINE SUCCESS
+            =====================================
+
+            APP     : ${params.APP_NAME}
+            ENV     : ${params.TARGET_ENV}
+            VERSION : ${env.FILE_VERSION ?: 'n/a'}
+            """
+        }
+        failure {
+            script {
+                notify(
+                    app:     params.APP_NAME,
+                    env:     params.TARGET_ENV,
+                    msg:     'FILES PIPELINE FAILED ❌',
+                    version: env.FILE_VERSION ?: '',
+                    commit:  params.COMMIT_FULL
+                )
+            }
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

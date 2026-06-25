@@ -1,5 +1,11 @@
 @Library('cicd-library') _
 
+def WEBHOOKS = []
+
+def CONFIG = null
+def MAPPING = null
+def DEPLOY = null
+
 pipeline {
 
     agent any
@@ -9,24 +15,22 @@ pipeline {
         string(name: 'TARGET_ENV')
         string(name: 'COMMIT_FULL')
         string(name: 'VERSION')
+        text(name:'NOTIFICATION_WEBHOOKS', defaultValue:'[]')
     }
 
     options {
-
-        disableConcurrentBuilds(
-            abortPrevious: true
-        )
-
-        buildDiscarder(
-            logRotator(numToKeepStr: '10')
-        )
-
+        disableConcurrentBuilds(abortPrevious: true)
+        buildDiscarder(logRotator(numToKeepStr: '10'))
         timestamps()
     }
 
     environment {
+
         DEPLOY_HISTORY_DIR =
         "/u01/jenkins/jenkins/deploy-history"
+
+        DEPLOY_DIR =
+        "/u01/jenkins/jenkins/deploy-state"
     }
 
     stages {
@@ -51,6 +55,12 @@ pipeline {
 
                 script {
 
+                    WEBHOOKS = readJSON(
+                        text: params.NOTIFICATION_WEBHOOKS
+                    )
+
+                    echo "WEBHOOKS LOADED: ${WEBHOOKS}"
+
                      echo """
                     =====================================
                     Loading Deployment Mapping
@@ -60,70 +70,65 @@ pipeline {
                     ENV : ${params.TARGET_ENV}
                     """                    
                     
-                    def config =
-                    loadConfig(
+                    CONFIG = loadConfig(
                         params.APP_NAME,
                         params.TARGET_ENV
                     )
 
-                    def mapping =
-                    config.mapping           
+                    MAPPING = CONFIG.mapping
 
+                    DEPLOY =
+                        MAPPING.deploy ?: [:]
 
-                    env.DEPLOY_ENV =
-                    mapping.env.toString()
+                    def SHARED =
+                        CONFIG.environment.shared ?: [:]
+
+                    env.DEPLOY_TYPE =
+                        (DEPLOY.type ?: "").toString()
+
+                    env.SSH_HOST =
+                        (SHARED.ssh_host ?: "").toString()
 
                     env.NAMESPACE =
-                    mapping.namespace.toString()
-
-                    env.WORKLOAD =
-                    mapping.workload.toString()
+                        (SHARED.namespace ?: "").toString()
 
                     env.IMAGE =
-                    "${mapping.registry}/${mapping.image_repo}:${params.VERSION}"
+                        "${MAPPING.registry}/${MAPPING.image_repo}:${params.VERSION}"
+
+                    echo """
+                    =====================================
+                    DEPLOY DEBUG
+                    =====================================
+
+                    SSH_HOST  : ${env.SSH_HOST}
+                    NAMESPACE : ${env.NAMESPACE}
+                    IMAGE     : ${env.IMAGE}
+                    """    
 
                     echo """
                     =====================================
                     Deployment Mapping
                     =====================================
 
-                    IMAGE      : ${env.IMAGE}
-                    ENV        : ${env.DEPLOY_ENV}
-                    NAMESPACE  : ${env.NAMESPACE}
-                    WORKLOAD   : ${env.WORKLOAD}
-                    """
-                }
-            }
-        }
-
-        stage('Verify Image') {
-
-            steps {
-
-                script {
-
-                    echo """
-                    =====================================
-                    Verifying Image
-                    =====================================
-
-                    IMAGE : ${env.IMAGE}
-                    """
-
-                    sh """
-                    gcloud auth configure-docker \
-                    us-central1-docker.pkg.dev \
-                    --quiet
-
-                    docker pull ${env.IMAGE}
+                    IMAGE   : ${env.IMAGE}
+                    TYPE     : ${DEPLOY.type}
+                    STRATEGY : ${DEPLOY.strategy}
+                    TARGETS : ${(DEPLOY.targets ?: [:]).keySet()}
                     """
 
                     echo """
-                    ✅ Image Verified
+                    =====================================
+                    RAW CONFIG
+                    =====================================
+
+                    ${groovy.json.JsonOutput.prettyPrint(
+                        groovy.json.JsonOutput.toJson(CONFIG)
+                    )}
                     """
                 }
             }
-        }
+        }       
+        
 
         stage('Deploy') {
 
@@ -131,62 +136,59 @@ pipeline {
 
                 script {
 
-                    stageExec(
-                        params.APP_NAME,
-                        params.TARGET_ENV,
-                        "DEPLOY"
-                    ) {
+                    def deployJobs = [:]
 
-                        writeFile(
-                            file: 'deploy.sh',
-                            text: libraryResource(
-                                'scripts/deploy.sh'
-                            )
-                        )
+                    if (!(DEPLOY.targets instanceof Map) || DEPLOY.targets.isEmpty()) {
 
-                        sh 'chmod +x deploy.sh'
+                        error """
+                        ❌ No deployment targets defined
 
-                        sh """
-                        ./deploy.sh \
-                        ${env.DEPLOY_ENV} \
-                        ${env.IMAGE} \
-                        ${params.APP_NAME} \
-                        ${env.NAMESPACE} \
-                        ${env.WORKLOAD}
+                        APP : ${params.APP_NAME}
+                        ENV : ${params.TARGET_ENV}
                         """
                     }
-                }
-            }
-        }
 
-        stage('Verify Rollout') {
+                    DEPLOY.targets.each { name, target ->
 
-            steps {
+                        deployJobs[name] = {
 
-                script {
+                            notify(                               
+                                app: params.APP_NAME,
+                                env: params.TARGET_ENV,
+                                msg: "DEPLOYMENT STARTED",
+                                webhooks: WEBHOOKS
+                            )
+
+                            deploy(
+                                deployType : env.DEPLOY_TYPE,
+                                sshHost    : env.SSH_HOST,
+                                context    : target.context,
+                                namespace  : env.NAMESPACE,
+                                statefulset: target.sts,
+                                image      : env.IMAGE
+                            )
+
+                            notify(                               
+                                app: params.APP_NAME,
+                                env: params.TARGET_ENV,
+                                msg: "DEPLOYMENT ENDED",
+                                webhooks: WEBHOOKS
+                            )                            
+                        }
+                    }
+
+                    parallel deployJobs
+
+                    parallel deployJobs
 
                     echo """
                     =====================================
-                    Verifying Rollout
+                    PARALLEL DEPLOY COMPLETE
                     =====================================
-
-                    WORKLOAD  : ${env.WORKLOAD}
-                    NAMESPACE : ${env.NAMESPACE}
-                    """
-
-                    sh """
-                    kubectl rollout status \
-                    deployment/${env.WORKLOAD} \
-                    -n ${env.NAMESPACE} \
-                    --timeout=300s
-                    """
-
-                    echo """
-                    ✅ Rollout Successful
                     """
                 }
             }
-        }
+        }        
 
         stage('Deployment History') {
 
@@ -200,18 +202,20 @@ pipeline {
                     =====================================
                     """
 
-                    deployHistory([
+                    def history = [
+                        app     : params.APP_NAME,
+                        env     : params.TARGET_ENV,
+                        commit  : params.COMMIT_FULL,
+                        version : params.VERSION,
+                        image   : env.IMAGE,
+                        build   : env.BUILD_NUMBER,
+                        targets : DEPLOY.targets.keySet(),
+                        type    : "DEPLOY"
+                    ]
 
-                        app: params.APP_NAME,
-                        env: env.DEPLOY_ENV,
-                        namespace: env.NAMESPACE,
-                        workload: env.WORKLOAD,
-                        commit: params.COMMIT_FULL,
-                        version: params.VERSION,
-                        image: env.IMAGE,
-                        build: env.BUILD_NUMBER,
-                        type: "DEPLOY"
-                    ])
+                    deployHistory(history)
+
+                    notifyHistory(history)
 
                     echo """
                     ✅ Deployment History Recorded
@@ -219,8 +223,27 @@ pipeline {
                 }
             }
         }
-    }
+    
 
+        stage('Update Deployment State') {
+
+            steps {
+                sh """
+                mkdir -p \
+                ${env.DEPLOY_DIR}/${params.APP_NAME}
+
+                echo ${params.COMMIT_FULL} > \
+                ${env.DEPLOY_DIR}/${params.APP_NAME}/${params.TARGET_ENV}.commit
+                """
+
+                echo """
+                =====================================
+                ✅ Deployment State Updated
+                =====================================
+                """
+            }
+        }        
+    }
     post {
 
         success {
@@ -244,7 +267,8 @@ pipeline {
                     msg: "DEPLOY SUCCESS",
                     version: params.VERSION,
                     commit: params.COMMIT_FULL,
-                    image: env.IMAGE
+                    image: env.IMAGE,
+                    webhooks: WEBHOOKS
                 )
             }
         }
@@ -270,7 +294,8 @@ pipeline {
                     msg: "DEPLOY FAILED ❌",
                     version: params.VERSION,
                     commit: params.COMMIT_FULL,
-                    image: env.IMAGE
+                    image: env.IMAGE,
+                    webhooks: WEBHOOKS
                 )
             }
         }

@@ -1,0 +1,1190 @@
+@Library('cicd-library') _
+
+def CONFIG = [:]
+
+def VERSION = ""
+
+def FILE_VERSION = ""
+
+def COMMIT_SHORT = ""
+
+def ACTIONS = ""
+
+def FC_DESTINATION = ""
+def CDN_BUCKET = ""
+
+def CDN_KEEP = ""
+def CDN_URL = ""
+
+def AWS_S3_BUCKET = ""
+def AWS_S3_URL = ""
+
+// ── Helper : check if an action is enabled for this run ──────────────────
+def hasAction(String action) {
+
+    if (!env.ACTIONS?.trim()) {
+        return false
+    }
+
+    return env.ACTIONS
+        .split(',')
+        .collect { it.trim() }
+        .contains(action)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+
+pipeline {
+
+    agent { label 'docker-builder' }
+
+    parameters {
+        string(name: 'APP_NAME',   description: 'Logical app name  (e.g. app1, app2)')
+        string(name: 'TARGET_ENV', description: 'Target environment (e.g. stag, uat)')
+        string(name: 'COMMIT_FULL',description: 'Full git commit SHA (optional — filled by trigger)')
+    }
+
+    options {
+        disableConcurrentBuilds(abortPrevious: true)
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+    }
+    
+    environment {        
+
+        ARTIFACT_DIR =
+        "/u01/jenkins/jenkins/artifacts/${params.APP_NAME}"
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    stages {
+
+        // ── 0. Init ───────────────────────────────────────────────────────
+        stage('Init') {
+            steps {
+                deleteDir()
+                echo """
+                =====================================
+                Workspace Cleaned
+                =====================================
+                """
+            }
+        }
+
+        // ── 1. Load Config ────────────────────────────────────────────────
+        stage('Load Config') {
+
+            steps {
+
+                script {
+
+                    echo """
+                    =====================================
+                    Loading Config
+                    =====================================
+                    APP : ${params.APP_NAME}
+                    ENV : ${params.TARGET_ENV}
+                    """
+
+                    def cfg = loadConfig(
+                        params.APP_NAME,
+                        params.TARGET_ENV
+                    )                   
+
+                    def mapping = cfg.mapping
+                    def docker = cfg.docker
+                    def versioning = cfg.versioning
+                    def cdn = cfg.cdn
+                    echo """
+                    CDN CONFIG
+                    ==========
+                    ${cdn}
+                    ==========
+                    """
+
+                    env.ACTIONS =
+                    cfg.actions.join(',')
+
+                    env.REPO_URL =
+                    mapping.repo ?: ""
+
+                    env.BRANCH_NAME =
+                    mapping.branch ?: ""
+
+                    env.REGISTRY =
+                    mapping.registry ?: ""
+
+                    env.IMAGE_REPO =
+                    mapping.image_repo ?: ""
+
+                    env.IMAGE =
+                    "${env.REGISTRY}/${env.IMAGE_REPO}"
+
+                    env.DOCKER_REPO =
+                    docker.repo ?: ""
+
+                    env.DOCKER_BRANCH =
+                    docker.branch ?: ""
+
+                    env.DOCKER_DIR =
+                    docker.context_dir ?: ""
+
+                    env.NAMESPACE =
+                    mapping.namespace ?: ""
+
+                    env.WORKLOAD =
+                    mapping.workload ?: ""
+
+                    env.ARTIFACT_DIR =
+                    "${env.STATE_DIR}/${params.APP_NAME}"
+
+                    env.CDN_BUCKET =
+                    cdn.bucket ?: ""
+
+                    env.FC_DESTINATION =
+                    cdn.fc_destination ?: ""
+
+                    env.CDN_KEEP =
+                    cdn.keep_version ?: ""                    
+
+                    env.CDN_URL =
+                    cdn.public_base_url
+
+                    env.AWS_S3_BUCKET =
+                    cdn.aws_bucket ?: ""
+
+                    env.AWS_S3_URL =
+                    cdn.aws_url ?: ""
+
+
+                    echo """
+                    =====================================
+                    Configuration Loaded
+                    =====================================
+                    ACTIONS      : ${env.ACTIONS}
+                    REPO         : ${env.REPO_URL}
+                    BRANCH       : ${env.BRANCH_NAME}
+                    IMAGE        : ${env.IMAGE}
+                    NAMESPACE    : ${env.NAMESPACE}
+                    WORKLOAD     : ${env.WORKLOAD}
+                    STATE_DIR    : ${env.STATE_DIR}
+                    ARTIFACT_DIR : ${env.ARTIFACT_DIR}
+                    FC_DESTINATION: ${env.FC_DESTINATION}
+                    CDN_BUCKET   : ${env.CDN_BUCKET ?: '(not set)'}
+                    CDN_KEEP     : ${env.CDN_KEEP ?: '(not set)'}
+                    CDN_URL      : ${env.CDN_URL ?: '(not set)'}
+                    AWS_S3_BUCKET: ${env.AWS_S3_BUCKET ?: '(not set)'}
+                    AWS_S3_URL   : ${env.AWS_S3_URL ?: '(not set)'}
+                    =====================================
+                    """
+                }
+            }
+        }
+
+        // ── 2. Checkout App Repo ──────────────────────────────────────────
+        stage('Checkout App Repo') {
+            steps {
+                echo """
+                =====================================
+                Checkout App Repository
+                =====================================
+                REPO   : ${env.REPO_URL}
+                BRANCH : ${env.BRANCH_NAME}
+                """
+                git(
+                    url:           env.REPO_URL,
+                    branch:        env.BRANCH_NAME,
+                    credentialsId: 'github-token'
+                )
+            }
+        }
+
+        // ── 3. File Versioning ────────────────────────────────────────────
+        stage('File Versioning') {
+            when { expression { hasAction('cdn_copy') || hasAction('generate_files') } }
+            steps {
+                script {
+
+                    env.FILE_VERSION = incrementFileVersion(
+                        bucket: env.CDN_BUCKET
+                    )
+
+                    writeFile(
+                        file: "/tmp/${params.TARGET_ENV}-fc.txt",
+                        text: env.FILE_VERSION
+                    )
+
+                    echo """
+                    =====================================
+                    FILE VERSION GENERATED
+                    =====================================
+                    VERSION : ${env.FILE_VERSION}
+                    =====================================
+                    """
+                }
+            }
+        }
+
+        // ── 4. Generate Files ─────────────────────────────────────────────
+        stage('Generate Files') {
+
+            when {
+                expression { hasAction('generate_files') }
+            }
+
+            steps {
+
+                script {
+
+                    notify(
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "FILE GENERATION STARTED"
+                    )
+
+                    generateFiles(
+
+                        workspace   : env.WORKSPACE,
+                        fileVersion : env.FILE_VERSION,
+                        destination : env.FC_DESTINATION,
+                        targetEnv   : params.TARGET_ENV
+                    )
+
+                    notify(
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "FILE GENERATION COMPLETE",
+                        version: env.FILE_VERSION
+                    )
+                }
+            }
+        }        
+
+        // ── 5. Copy Files to CDN ──────────────────────────────────────────
+        stage('Copy Files To CDN') {
+
+            when {
+                expression { hasAction('cdn_copy') }
+            }
+
+            steps {
+                script {
+
+                    stageExec(
+                        params.APP_NAME,
+                        params.TARGET_ENV,
+                        "CDN COPY"
+                    ) {
+
+                        copyFilesToCdn(
+                            version      : env.FILE_VERSION,
+                            source       : env.FC_DESTINATION,
+                            gcpBucket    : env.CDN_BUCKET,
+                            gcpUrl       : env.CDN_URL,
+                            awsBucket    : env.AWS_S3_BUCKET,
+                            awsUrl       : env.AWS_S3_URL,
+                            keepVersions : env.CDN_KEEP
+                        )
+                    }
+                }
+            }
+        }
+
+        // ── 6. Cleanup Old CDN Versions ───────────────────────────────────
+        stage('Cleanup Old CDN Versions') {
+            when { expression { hasAction('cdn_copy') } }
+            steps {
+                script {
+                    stageExec(params.APP_NAME, params.TARGET_ENV, "CDN CLEANUP") {
+
+                        cleanupOldCdnVersions(
+                            bucket: "${env.CDN_BUCKET}",
+                            keep:   env.CDN_KEEP.toInteger()
+                        )
+                    }
+                }
+            }
+        }        
+
+        // ── 7. Checkout Docker Repo ───────────────────────────────────────
+        stage('Checkout Docker Repo') {
+            when { expression { hasAction('build') } }
+            steps {
+                echo """
+                =====================================
+                Checkout Docker Repository
+                =====================================
+                REPO    : ${env.DOCKER_REPO}
+                BRANCH  : ${env.DOCKER_BRANCH}
+                CONTEXT : ${env.DOCKER_DIR}
+                """
+                dir("${env.DOCKER_DIR}") {
+                    deleteDir()
+                    git(
+                        url:           env.DOCKER_REPO,
+                        branch:        env.DOCKER_BRANCH,
+                        credentialsId: 'github-token'
+                    )
+                }
+            }
+        }
+
+        stage('Versioning') {
+
+            when {
+
+                expression {
+
+                    hasAction('build')
+                }
+            }
+
+            steps {
+
+                script {
+
+                    env.COMMIT_SHORT =
+                    params.COMMIT_FULL.take(7)
+
+                    env.VERSION =
+                    generateVersion(
+                        env.IMAGE,
+                        env.COMMIT_SHORT
+                    )
+
+                    env.COMMIT_FULL =
+                    params.COMMIT_FULL
+
+                    currentBuild.description =
+                    env.VERSION
+
+                    currentBuild.displayName =
+                    "${params.APP_NAME} ${env.VERSION}"
+
+                    echo """
+                    =====================================
+                    Build Metadata
+                    =====================================
+
+                    VERSION : ${env.VERSION}
+                    COMMIT  : ${params.COMMIT_FULL}
+                    IMAGE   : ${env.IMAGE}
+                    """
+                }
+            }
+        }
+
+        // ── 8. Build WAR ──────────────────────────────────────────────────
+        stage('Build WAR') {
+            when { expression { hasAction('build') } }
+            steps {
+                script {
+
+                    def warCache = "${env.ARTIFACT_DIR}/${params.TARGET_ENV}-${params.COMMIT_FULL}.war"
+
+                    def warExists = sh(
+                        script: """
+                        [ -f "${warCache}" ] && echo yes || echo no
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (warExists == "yes") {
+
+                        echo """
+                        =====================================
+                        Reusing Cached WAR
+                        =====================================
+                        FILE : ${warCache}
+                        """
+                        sh """
+                        mkdir -p build-output
+                        cp ${warCache} build-output/app.war
+                        """
+
+                    } else {
+
+                        stageExec(params.APP_NAME, params.TARGET_ENV, "WAR BUILD") {
+                            buildWar()
+                        }
+
+                        sh """                       
+                        mkdir -p ${env.ARTIFACT_DIR}
+                        cp build-output/app.war '${warCache}'
+                        """
+
+                        echo """
+                        =====================================
+                        WAR Cached
+                        =====================================
+                        FILE : ${warCache}
+                        """
+                    }
+
+                    WAR_MD5 = readFile(
+                        "build-output/app.war.md5"
+                    ).trim()
+
+                    notify(
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "WAR READY"
+                    )
+                }
+            }
+        }
+
+        // ── 9. Cleanup Old WARs ───────────────────────────────────────────
+        stage('Cleanup Old WARs') {
+            when { expression { hasAction('build') } }
+            steps {
+                sh """
+                cd ${env.ARTIFACT_DIR}
+                ls -tp *.war | tail -n +4 | xargs -r rm -f
+                """
+                echo """
+                =====================================
+                WAR Cleanup Complete  (keeping latest 3)
+                =====================================
+                """
+            }
+        }
+
+        // ── 10. Inject WAR Into Docker Context ────────────────────────────
+        stage('Docker Build + Push') {
+
+            when {
+                expression { hasAction('build') }
+            }
+
+            steps {
+
+                script {
+
+                    def imageCache = "${env.IMAGE}:${env.VERSION}"
+
+                    def imageExists = sh(
+                        script: """
+                        gcloud artifacts docker tags list ${env.IMAGE} \
+                            --format='value(TAG)' 2>/dev/null \
+                            | grep '^${env.VERSION}\$' > /dev/null \
+                            && echo yes || echo no
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (imageExists == "yes") {
+
+                        echo """
+                        =====================================
+                        Docker Image Reused
+                        =====================================
+                        IMAGE : ${imageCache}
+                        =====================================
+                        """
+
+                    } else {
+
+                        stageExec(
+                            params.APP_NAME,
+                            params.TARGET_ENV,
+                            "DOCKER BUILD"
+                        ) {
+
+                            writeFile(
+                                file: 'docker.sh',
+                                text: libraryResource('scripts/docker.sh')
+                            )
+
+                            sh 'chmod +x docker.sh'
+
+                            sh """
+                            ./docker.sh \
+                            '${env.IMAGE}' \
+                            '${env.VERSION}' \
+                            '${env.DOCKER_DIR}' \
+                            'build-output/app.war'
+                            """
+                        }
+                    }
+                }
+            }
+        }        
+
+        // ── 11. Notify Ready ──────────────────────────────────────────────
+        stage('Notify Ready') {
+            when { expression { hasAction('build') || hasAction('generate_files') } }
+            steps {
+                notify(
+                    app:     params.APP_NAME,
+                    env:     params.TARGET_ENV,
+                    msg:     "ARTIFACT READY",
+                    version: VERSION,
+                    commit:  params.COMMIT_FULL,
+                    md5:     env.WAR_MD5,
+                    image:   "${env.IMAGE}:${env.VERSION}"
+                )
+            }
+        }
+
+        stage('Publish Build Metadata') {
+
+            when {
+                expression { hasAction('build') }
+            }
+
+            steps {
+
+                script {
+
+                    currentBuild.description =
+                        "${env.VERSION}|${env.IMAGE}:${env.VERSION}"
+
+                    echo """
+                    =====================================
+                    BUILD METADATA
+                    =====================================
+
+                    VERSION : ${env.VERSION}
+                    IMAGE   : ${env.IMAGE}:${env.VERSION}
+
+                    =====================================
+                    """
+                }
+            }
+        }
+
+    } // end stages
+
+    // ── Post ──────────────────────────────────────────────────────────────
+    post {
+
+        success {
+            echo """
+            =====================================
+            ✅ BUILD SUCCESS
+            =====================================
+            """
+        }
+
+        failure {
+            script {
+                notify(
+                    app:     params.APP_NAME,
+                    env:     params.TARGET_ENV,
+                    msg:     "BUILD FAILED ❌",
+                    version: env.VERSION,
+                    commit:  params.COMMIT_FULL,
+                    image:   "${env.IMAGE}:${env.VERSION}"
+                )
+            }
+        }
+
+        always {
+            cleanWs()
+        }
+    }
+}
+
+
+
+
+
+// @Library('cicd-library') _
+
+// def CONFIG = [:]
+
+// def VERSION = ""
+
+// def FILE_VERSION = ""
+
+// def COMMIT_SHORT = ""
+
+// def ACTIONS = ""
+
+// def REPO_URL = ""
+// def BRANCH_NAME = ""
+
+// def REGISTRY = ""
+// def IMAGE_REPO = ""
+// def IMAGE = ""
+
+// def DOCKER_REPO = ""
+// def DOCKER_BRANCH = ""
+// def DOCKER_DIR = ""
+
+// def NAMESPACE = ""
+// def WORKLOAD = ""
+
+// def STATE_DIR = ""
+// def ARTIFACT_DIR = ""
+
+// def CDN_BUCKET = ""
+// def CDN_PATH = ""
+// def CDN_KEEP = ""
+// def CDN_URL = ""
+
+// def AWS_S3_BUCKET = ""
+// def AWS_S3_URL = ""
+
+// // ── Helper : check if an action is enabled for this run ──────────────────
+// def hasAction(String action) {
+
+//     if (!env.ACTIONS?.trim()) {
+//         return false
+//     }
+
+//     return env.ACTIONS
+//         .split(',')
+//         .collect { it.trim() }
+//         .contains(action)
+// }
+
+// // ─────────────────────────────────────────────────────────────────────────
+
+// pipeline {
+
+//     agent { label 'docker-builder' }
+
+//     parameters {
+//         string(name: 'APP_NAME',   description: 'Logical app name  (e.g. app1, app2)')
+//         string(name: 'TARGET_ENV', description: 'Target environment (e.g. stag, uat)')
+//         string(name: 'COMMIT_FULL',description: 'Full git commit SHA (optional — filled by trigger)')
+//     }
+
+//     options {
+//         disableConcurrentBuilds(abortPrevious: true)
+//         buildDiscarder(logRotator(numToKeepStr: '10'))
+//         timestamps()
+//     }
+    
+//     // environment {        
+     
+//     //     STATE_DIR =
+//     //     "/u01/jenkins/jenkins/build-state"
+
+//     //     ARTIFACT_DIR =
+//     //     "/u01/jenkins/jenkins/artifacts/${params.APP_NAME}"
+//     // }
+
+//     // ─────────────────────────────────────────────────────────────────────
+//     stages {
+
+//         // ── 0. Init ───────────────────────────────────────────────────────
+//         stage('Init') {
+//             steps {
+//                 deleteDir()
+//                 echo """
+//                 =====================================
+//                 Workspace Cleaned
+//                 =====================================
+//                 """
+//             }
+//         }
+
+//         // ── 1. Load Config ────────────────────────────────────────────────
+//         stage('Load Config') {
+
+//             steps {
+
+//                 script {
+
+//                     echo """
+//                     =====================================
+//                     Loading Config
+//                     =====================================
+//                     APP : ${params.APP_NAME}
+//                     ENV : ${params.TARGET_ENV}
+//                     """
+
+//                     def cfg = loadConfig(
+//                         params.APP_NAME,
+//                         params.TARGET_ENV
+//                     )
+
+//                     echo """
+//                     DEBUG CONFIG
+//                     =====================================
+
+//                     ${cfg}
+
+//                     =====================================
+//                     """
+
+//                     def mapping = cfg.mapping
+//                     def docker = cfg.docker
+//                     def versioning = cfg.versioning
+//                     def cdn = cfg.cdn
+
+//                     env.ACTIONS =
+//                     cfg.actions.join(',')
+
+//                     env.REPO_URL =
+//                     mapping.repo ?: ""
+
+//                     env.BRANCH_NAME =
+//                     mapping.branch ?: ""
+
+//                     env.REGISTRY =
+//                     mapping.registry ?: ""
+
+//                     env.IMAGE_REPO =
+//                     mapping.image_repo ?: ""
+
+//                     env.IMAGE =
+//                     "${env.REGISTRY}/${env.IMAGE_REPO}"
+
+//                     env.DOCKER_REPO =
+//                     docker.repo ?: ""
+
+//                     env.DOCKER_BRANCH =
+//                     docker.branch ?: ""
+
+//                     env.DOCKER_DIR =
+//                     docker.context_dir ?: ""
+
+//                     env.NAMESPACE =
+//                     mapping.namespace ?: ""
+
+//                     env.WORKLOAD =
+//                     mapping.workload ?: ""
+
+//                     env.STATE_DIR =
+//                     versioning.state_dir ?: ""
+
+//                     env.ARTIFACT_DIR =
+//                     "${env.STATE_DIR}/${params.APP_NAME}"
+
+//                     env.CDN_BUCKET =
+//                     cdn.bucket ?: ""
+
+//                     env.CDN_PATH =
+//                     cdn.path ?: ""
+
+//                     env.CDN_KEEP =
+//                     cdn.keep_version ?: ""
+
+//                     env.CDN_URL =
+//                     cdn.public_base_url
+
+//                     env.AWS_S3_BUCKET =
+//                     cdn.aws_bucket ?: ""
+
+//                     env.AWS_S3_URL =
+//                     cdn.aws_url ?: ""
+
+
+//                     echo """
+//                     =====================================
+//                     Configuration Loaded
+//                     =====================================
+//                     ACTIONS      : ${env.ACTIONS}
+//                     REPO         : ${env.REPO_URL}
+//                     BRANCH       : ${env.BRANCH_NAME}
+//                     IMAGE        : ${env.IMAGE}
+//                     NAMESPACE    : ${env.NAMESPACE}
+//                     WORKLOAD     : ${env.WORKLOAD}
+//                     STATE_DIR    : ${env.STATE_DIR}
+//                     ARTIFACT_DIR : ${env.ARTIFACT_DIR}
+//                     CDN_BUCKET   : ${env.CDN_BUCKET ?: '(not set)'}
+//                     CDN_PATH     : ${env.CDN_PATH ?: '(not set)'}
+//                     CDN_KEEP     : ${env.CDN_KEEP ?: '(not set)'}
+//                     CDN_URL      : ${env.CDN_URL ?: '(not set)'}
+//                     AWS_S3_BUCKET: ${env.AWS_S3_BUCKET ?: '(not set)'}
+//                     AWS_S3_URL   : ${env.AWS_S3_URL ?: '(not set)'}
+//                     =====================================
+//                     """
+//                 }
+//             }
+//         }
+
+//         // ── 2. Checkout App Repo ──────────────────────────────────────────
+//         stage('Checkout App Repo') {
+//             steps {
+//                 echo """
+//                 =====================================
+//                 Checkout App Repository
+//                 =====================================
+//                 REPO   : ${env.REPO_URL}
+//                 BRANCH : ${env.BRANCH_NAME}
+//                 """
+//                 git(
+//                     url:           env.REPO_URL,
+//                     branch:        env.BRANCH_NAME,
+//                     credentialsId: 'github-token'
+//                 )
+//             }
+//         }
+
+//         // ── 3. File Versioning ────────────────────────────────────────────
+//         stage('File Versioning') {
+//             when { expression { hasAction('cdn_copy') || hasAction('generate_files') } }
+//             steps {
+//                 script {
+
+//                     env.FILE_VERSION = incrementFileVersion(
+//                         bucket: env.CDN_BUCKET
+//                     )
+
+//                     echo """
+//                     =====================================
+//                     FILE VERSION GENERATED
+//                     =====================================
+//                     VERSION : ${env.FILE_VERSION}
+//                     =====================================
+//                     """
+//                 }
+//             }
+//         }
+
+//         // ── 4. Generate Files ─────────────────────────────────────────────
+//         stage('Generate Files') {
+//             when { expression { hasAction('generate_files') } }
+//             steps {
+//                 script {
+//                     stageExec(params.APP_NAME, params.TARGET_ENV, "FILE GENERATION") {
+
+//                         generateFiles(
+//                             app:         params.APP_NAME,
+//                             env:         params.TARGET_ENV,
+//                             workspace:   env.WORKSPACE,
+//                             version:     env.FILE_VERSION,   // set by File Versioning stage
+//                             gcpBucket:   env.CDN_BUCKET,
+//                             destination: "${env.STATE_DIR}/${params.APP_NAME}/fc-app"
+//                         )
+//                     }
+//                 }
+//             }
+//         }        
+
+//         // ── 5. Copy Files to CDN ──────────────────────────────────────────
+//         stage('Copy Files To CDN') {
+//             when { expression { hasAction('cdn_copy') } }
+//             steps {
+//                 script {
+//                     stageExec(params.APP_NAME, params.TARGET_ENV, "CDN COPY") {
+
+//                         copyFilesToCdn(
+//                             version:      env.FILE_VERSION,
+//                             gcpBucket:    env.CDN_BUCKET,
+//                             gcpCdnUrl:    env.CDN_URL,
+//                             awsBucket:    env.AWS_S3_BUCKET,
+//                             awsUrl:       env.AWS_S3_URL,
+//                             keepVersions: env.CDN_KEEP.toInteger(),
+//                             destination:  "${env.STATE_DIR}/${params.APP_NAME}/fc-app",
+//                             clearCache:   true
+//                         )
+//                     }
+//                 }
+//             }
+//         }
+
+//         // ── 6. Cleanup Old CDN Versions ───────────────────────────────────
+//         stage('Cleanup Old CDN Versions') {
+//             when { expression { hasAction('cdn_copy') } }
+//             steps {
+//                 script {
+//                     stageExec(params.APP_NAME, params.TARGET_ENV, "CDN CLEANUP") {
+
+//                         cleanupOldCdnVersions(
+//                             bucket: "${env.CDN_BUCKET}/${env.CDN_PATH}",
+//                             keep:   env.CDN_KEEP.toInteger()
+//                         )
+//                     }
+//                 }
+//             }
+//         }
+
+//         // ── 7. Checkout Docker Repo ───────────────────────────────────────
+//         stage('Checkout Docker Repo') {
+//             when { expression { hasAction('build') } }
+//             steps {
+//                 echo """
+//                 =====================================
+//                 Checkout Docker Repository
+//                 =====================================
+//                 REPO    : ${env.DOCKER_REPO}
+//                 BRANCH  : ${env.DOCKER_BRANCH}
+//                 CONTEXT : ${env.DOCKER_DIR}
+//                 """
+//                 dir("${env.DOCKER_DIR}") {
+//                     deleteDir()
+//                     git(
+//                         url:           env.DOCKER_REPO,
+//                         branch:        env.DOCKER_BRANCH,
+//                         credentialsId: 'github-token'
+//                     )
+//                 }
+//             }
+//         }
+
+//         stage('Versioning') {
+
+//             when {
+
+//                 expression {
+
+//                     hasAction('build')
+//                 }
+//             }
+
+//             steps {
+
+//                 script {
+
+//                     env.COMMIT_SHORT =
+//                     params.COMMIT_FULL.take(7)
+
+//                     env.VERSION =
+//                     generateVersion(
+//                         env.IMAGE,
+//                         env.COMMIT_SHORT
+//                     )
+
+//                     env.COMMIT_FULL =
+//                     params.COMMIT_FULL
+
+//                     currentBuild.description =
+//                     env.VERSION
+
+//                     currentBuild.displayName =
+//                     "${params.APP_NAME} ${env.VERSION}"
+
+//                     echo """
+//                     =====================================
+//                     Build Metadata
+//                     =====================================
+
+//                     VERSION : ${env.VERSION}
+//                     COMMIT  : ${params.COMMIT_FULL}
+//                     IMAGE   : ${env.IMAGE}
+//                     """
+//                 }
+//             }
+//         }
+
+//         // ── 8. Build WAR ──────────────────────────────────────────────────
+//         stage('Build WAR') {
+//             when { expression { hasAction('build') } }
+//             steps {
+//                 script {
+
+//                     def warCache = "${env.ARTIFACT_DIR}/${params.TARGET_ENV}-${params.COMMIT_FULL}.war"
+
+//                     def warExists = sh(
+//                         script: """
+//                         [ -f "${warCache}" ] && echo yes || echo no
+//                         """,
+//                         returnStdout: true
+//                     ).trim()
+
+//                     if (warExists == "yes") {
+
+//                         echo """
+//                         =====================================
+//                         Reusing Cached WAR
+//                         =====================================
+//                         FILE : ${warCache}
+//                         """
+//                         sh """
+//                         mkdir -p build-output
+//                         cp ${warCache} build-output/app.war
+//                         """
+
+//                     } else {
+
+//                         stageExec(params.APP_NAME, params.TARGET_ENV, "WAR BUILD") {
+//                             buildWar(profile: params.TARGET_ENV)
+//                         }
+
+//                         sh """
+//                         mkdir -p build-output
+//                         mkdir -p ${env.ARTIFACT_DIR}
+
+//                         WAR_FILE=\$(find app-web/target -name "*.war" | head -1)
+
+//                         cp "\$WAR_FILE"          build-output/app.war
+//                         cp  build-output/app.war ${warCache}
+//                         """
+
+//                         echo """
+//                         =====================================
+//                         WAR Cached
+//                         =====================================
+//                         FILE : ${warCache}
+//                         """
+//                     }
+
+//                     WAR_MD5 = sh(
+//                         script: "md5sum build-output/app.war | awk '{print \$1}'",
+//                         returnStdout: true
+//                     ).trim()
+
+//                     notify(app: params.APP_NAME, env: params.TARGET_ENV, msg: "WAR READY")
+//                 }
+//             }
+//         }
+
+//         // ── 9. Cleanup Old WARs ───────────────────────────────────────────
+//         stage('Cleanup Old WARs') {
+//             when { expression { hasAction('build') } }
+//             steps {
+//                 sh """
+//                 cd ${env.ARTIFACT_DIR}
+//                 ls -tp *.war | tail -n +4 | xargs -r rm -f
+//                 """
+//                 echo """
+//                 =====================================
+//                 WAR Cleanup Complete  (keeping latest 3)
+//                 =====================================
+//                 """
+//             }
+//         }
+
+//         // ── 10. Inject WAR Into Docker Context ────────────────────────────
+//         stage('Inject WAR Into Docker Context') {
+//             when { expression { hasAction('build') } }
+//             steps {
+//                 sh """
+//                 mkdir -p ${env.DOCKER_DIR}/app/live
+//                 cp build-output/app.war ${env.DOCKER_DIR}/app/live/app.war
+
+//                 echo ""
+//                 echo "Docker WAR Verification"
+//                 echo "-------------------------------------"
+//                 ls -lh ${env.DOCKER_DIR}/app/live
+//                 """
+//             }
+//         }
+
+//         // ── 11. Docker Build + Push ───────────────────────────────────────
+//         stage('Docker Build + Push') {
+//             when { expression { hasAction('build') } }
+//             steps {
+//                 script {
+
+//                     def imageCache = "${env.IMAGE}:${env.VERSION}"
+
+//                     def imageExists = sh(
+//                         script: """
+//                         gcloud artifacts docker tags list ${env.IMAGE} \
+//                             --format='value(TAG)' 2>/dev/null \
+//                             | grep '^${env.VERSION}\$' > /dev/null \
+//                             && echo yes || echo no
+//                         """,
+//                         returnStdout: true
+//                     ).trim()
+
+//                     if (imageExists == "yes") {
+
+//                         echo """
+//                         =====================================
+//                         Docker Image Reused
+//                         =====================================
+//                         IMAGE : ${imageCache}
+//                         =====================================
+//                         """
+
+//                     } else {
+
+//                         stageExec(params.APP_NAME, params.TARGET_ENV, "DOCKER BUILD") {
+
+//                             writeFile(
+//                                 file: 'docker.sh',
+//                                 text: libraryResource('scripts/docker.sh')
+//                             )
+//                             sh 'chmod +x docker.sh'
+//                             sh """
+//                             ./docker.sh ${env.IMAGE} ${env.VERSION} ${env.DOCKER_DIR}
+//                             """
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+
+//         // ── 12. Update State ──────────────────────────────────────────────
+//         stage('Update State') {
+//             when { expression { hasAction('build') } }
+//             steps {
+//                 sh """
+//                 mkdir -p ${env.STATE_DIR}/${params.APP_NAME}
+
+//                 echo ${params.COMMIT_FULL} > \
+//                     ${env.STATE_DIR}/${params.APP_NAME}/${params.TARGET_ENV}.commit
+//                 """
+//                 echo """
+//                 =====================================
+//                 State Updated
+//                 =====================================
+//                 """
+//             }
+//         }
+
+//         // ── 13. Build History ─────────────────────────────────────────────
+//         stage('History') {
+//             when { expression { hasAction('build') } }
+//             steps {
+//                 script {
+//                     buildHistory([
+//                         app          : params.APP_NAME,
+//                         branch       : env.BRANCH_NAME,
+//                         commit       : params.COMMIT_FULL,
+//                         short_commit : env.COMMIT_SHORT,
+//                         version      : env.VERSION,
+//                         image        : "${env.IMAGE}:${env.VERSION}",
+//                         build        : env.BUILD_NUMBER,
+//                         env          : params.TARGET_ENV,
+//                         type         : "BUILD"
+//                     ])
+//                 }
+//             }
+//         }
+
+//         // ── 14. Notify Ready ──────────────────────────────────────────────
+//         stage('Notify Ready') {
+//             when { expression { hasAction('build') } }
+//             steps {
+//                 notify(
+//                     app:     params.APP_NAME,
+//                     env:     params.TARGET_ENV,
+//                     msg:     "ARTIFACT READY",
+//                     version: VERSION,
+//                     commit:  params.COMMIT_FULL,
+//                     md5:     env.WAR_MD5,
+//                     image:   "${env.IMAGE}:${env.VERSION}"
+//                 )
+//             }
+//         }
+
+//     } // end stages
+
+//     // ── Post ──────────────────────────────────────────────────────────────
+//     post {
+
+//         success {
+//             echo """
+//             =====================================
+//             ✅ BUILD SUCCESS
+//             =====================================
+//             """
+//         }
+
+//         failure {
+//             script {
+//                 notify(
+//                     app:     params.APP_NAME,
+//                     env:     params.TARGET_ENV,
+//                     msg:     "BUILD FAILED ❌",
+//                     version: env.VERSION,
+//                     commit:  params.COMMIT_FULL,
+//                     image:   "${env.IMAGE}:${env.VERSION}"
+//                 )
+//             }
+//         }
+
+//         always {
+//             cleanWs()
+//         }
+//     }
+// }

@@ -83,6 +83,39 @@ pipeline {
             }
         }
 
+        stage('Process Requests') {
+
+            steps {
+
+                script {
+
+                    def requests = loadRequests()
+
+                    if (!requests) {
+
+                        echo "No pending requests"
+
+                        return
+                    }
+
+                    requests.each { req ->
+
+                        buildQueue << [
+
+                            app      : req.app,
+                            repo     : req.repo,
+                            branch   : req.branch,
+                            env      : req.env,
+                            actions  : req.actions,
+                            commit   : req.commit
+                        ]
+
+                        markRequestCompleted(req.id)
+                    }
+                }
+            }
+        }
+
         stage('Detect Changes') {
 
             steps {

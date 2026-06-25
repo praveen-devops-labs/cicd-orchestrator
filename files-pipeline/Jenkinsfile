@@ -1,0 +1,361 @@
+@Library('cicd-library') _
+
+def WEBHOOKS = []
+
+pipeline {
+
+    agent { label 'files-builder' }
+
+    parameters {
+
+        string(name:'APP_NAME')
+        string(name:'TARGET_ENV')
+        string(name:'COMMIT_FULL')
+        string(name:'REPO_URL')
+        string(name:'BRANCH_NAME')
+        string(name:'FC_DESTINATION')
+        string(name:'GCP_BUCKET')
+        string(name:'GCP_URL')
+        string(name:'AWS_S3_BUCKET')
+        string(name:'AWS_S3_URL')
+        string(name:'CDN_KEEP')
+        string(name:'SSH_HOST')
+        string(name:'ES_URL')
+        string(name:'ES_INDEX')
+        string(name:'GCP_DOC_ID')
+        string(name:'AWS_DOC_ID')
+        string(name:'CACHE_ENABLED')
+        string(name:'CACHE_TARGETS')
+        string(name:'CACHE_API')
+        string(name:'CACHE_ACCESS')
+        text(name:'NOTIFICATION_WEBHOOKS', defaultValue:'[]')
+    }
+
+    options {
+        disableConcurrentBuilds(abortPrevious: true)
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+    }
+
+    stages {
+
+        // ── 1. Checkout App Repo ──────────────────────────────────────────
+        stage('Checkout App Repo') {
+
+            steps {
+
+                echo """
+                =====================================
+                Checkout App Repository
+                =====================================
+
+                REPO   : ${params.REPO_URL}
+                BRANCH : ${params.BRANCH_NAME}
+                """
+
+                script {
+
+                    WEBHOOKS = readJSON(
+                        text: params.NOTIFICATION_WEBHOOKS
+                    )
+
+                    echo "WEBHOOKS LOADED: ${WEBHOOKS}"
+
+                    if (!fileExists('.git')) {
+
+                        echo """
+                        =====================================
+                        Initial Clone
+                        =====================================
+                        """
+
+                        checkout([
+                            $class: 'GitSCM',
+
+                            branches: [[
+                                name: "*/${params.BRANCH_NAME}"
+                            ]],
+
+                            userRemoteConfigs: [[
+                                url: params.REPO_URL,
+                                credentialsId: 'github-token'
+                            ]],
+
+                            extensions: [[
+                                $class: 'CloneOption',
+                                shallow: true,
+                                depth: 1,
+                                noTags: true,
+                                honorRefspec: true
+                            ]]
+                        ])
+
+                    } else {
+
+                        echo """
+                        =====================================
+                        Reusing Existing Repository
+                        =====================================
+                        """
+
+                        sh """
+                        git remote set-url origin ${params.REPO_URL}
+
+                        git fetch \
+                        --depth=1 \
+                        --no-tags \
+                        origin \
+                        ${params.BRANCH_NAME}
+
+                        git checkout -B \
+                        ${params.BRANCH_NAME} \
+                        FETCH_HEAD
+
+                        git reset --hard FETCH_HEAD
+
+                        git clean -fdx
+                        """
+                    }
+                }
+
+                notify(
+                    app: params.APP_NAME,
+                    env: params.TARGET_ENV,
+                    msg: "FC STARTED",
+                    commit: params.COMMIT_FULL,
+                    webhooks: WEBHOOKS
+                )
+            }
+        }
+
+        // ── 2. File Versioning ────────────────────────────────────────────
+        stage('File Versioning') {            
+            steps {
+                script {
+
+                    env.FILE_VERSION = incrementFileVersion(
+                        bucket: params.GCP_BUCKET
+                    )
+
+                    writeFile(
+                        file: "/tmp/${params.TARGET_ENV}-fc.txt",
+                        text: env.FILE_VERSION
+                    )
+
+                    echo """
+                    =====================================
+                    FILE VERSION GENERATED
+                    =====================================
+                    VERSION : ${env.FILE_VERSION}
+                    =====================================
+                    """
+                }
+            }
+        }
+
+        // ── 3. Generate Files ─────────────────────────────────────────────
+        stage('Generate Files') {
+
+            steps {
+
+                script {
+
+                    notify(                       
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "FILE GENERATION STARTED",
+                        webhooks: WEBHOOKS
+                    )
+
+                    generateFiles(
+                        workspace   : env.WORKSPACE,
+                        fileVersion : env.FILE_VERSION,
+                        destination : params.FC_DESTINATION,
+                        targetEnv   : params.TARGET_ENV
+                    )
+
+                    notify(                       
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "FILE GENERATION COMPLETE",
+                        version: env.FILE_VERSION,
+                        webhooks: WEBHOOKS
+                    )
+                }
+            }
+        }        
+
+        // ── 4. Copy Files To CDN ───────────────────────────────────────
+        stage('Copy Files To CDN') {
+
+            steps {
+
+                script {
+
+                    notify(                       
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "COPY TO CDN STARTED",
+                        webhooks: WEBHOOKS
+                    )                     
+
+                    copyFilesToCdn(
+                        version      : env.FILE_VERSION,
+                        source       : params.FC_DESTINATION,
+                        gcpBucket    : params.GCP_BUCKET,
+                        gcpUrl       : params.GCP_URL,
+                        awsBucket    : params.AWS_S3_BUCKET,
+                        awsUrl       : params.AWS_S3_URL,
+                        keepVersions : params.CDN_KEEP
+                    )
+
+                    notify(                       
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "COPY TO CDN COMPLETED",
+                        webhooks: WEBHOOKS
+                    )                 
+                }
+            }
+        }
+
+        // ── 5. Switch CDN Version ───────────────────────────────────────
+        stage('Switch CDN Version') {
+
+            steps {
+
+                script {
+
+                    notify(                       
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "SWITCH STARTED",
+                        webhooks: WEBHOOKS
+                    )                     
+
+                    switchCdnVersion(
+                        version  : env.FILE_VERSION,
+                        sshHost  : params.SSH_HOST,
+                        esUrl    : params.ES_URL,
+                        index    : params.ES_INDEX,
+                        gcpDocId : params.GCP_DOC_ID,
+                        awsDocId : params.AWS_DOC_ID,
+                        gcpUrl   : params.GCP_URL,
+                        awsUrl   : params.AWS_S3_URL
+                    )
+
+                    notify(                       
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "SWITCH COMPLETED",
+                        webhooks: WEBHOOKS
+                    )                 
+                }
+            }
+        }
+
+        // ── 6. Cache Clear ───────────────────────────────────────
+        stage('Cache Clear') {
+
+            steps {
+
+                script {
+
+                    notify(                       
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "CACHE CLEAR STARTED",
+                        webhooks: WEBHOOKS
+                    )                     
+
+                    if (params.CACHE_ENABLED == "true") {
+
+                        def targets =
+                        readJSON(
+                            text: params.CACHE_TARGETS
+                        )
+
+                        clearCache(
+                            sshHost : params.SSH_HOST,
+                            targets : targets,
+                            apiKeyCredential: params.CACHE_API,
+                            accessKeyCredential: params.CACHE_ACCESS
+                        )                    
+                    }
+
+                    notify(                       
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "CACHE CLEAR COMPLETED",
+                        webhooks: WEBHOOKS
+                    )                 
+                }
+            }
+        }
+
+        // ── 7. Notify Ready ────────────────────────────────────────────
+        stage('Notify Ready') {
+
+            steps {
+
+                notify(
+                    app     : params.APP_NAME,
+                    env     : params.TARGET_ENV,
+                    msg     : "FILES SWITCHED ✅",
+                    version : env.FILE_VERSION,
+                    commit  : params.COMMIT_FULL,
+                    webhooks: WEBHOOKS
+                )
+            }
+        }
+
+        // ── 8. Publish File Metadata ───────────────────────────────────
+        stage('Publish File Metadata') {
+
+            steps {
+
+                script {
+
+                    currentBuild.description =
+                        env.FILE_VERSION
+
+                    echo """
+                    =====================================
+                    FILE METADATA
+                    =====================================
+
+                    VERSION : ${env.FILE_VERSION}
+                    """
+                }
+            }
+        } 
+    } // end stages
+    // ── Post ──────────────────────────────────────────────────────────────
+    post {
+
+        success {
+            echo """
+            =====================================
+            ✅ FILE GENERATION SUCCESS
+            =====================================
+            """
+        }
+
+        failure {
+            script {
+                notify(
+                    app:     params.APP_NAME,
+                    env:     params.TARGET_ENV,
+                    msg:     "FILES FAILED ❌",
+                    version: env.FILE_VERSION,
+                    commit:  params.COMMIT_FULL,
+                    webhooks: WEBHOOKS
+                )
+            }
+        }
+
+        always {
+            cleanWs()
+        }
+    }
+}

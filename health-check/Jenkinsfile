@@ -1,0 +1,24 @@
+@Library('cicd-library') _ 
+
+pipeline { 
+    agent any 
+    
+    
+    stages {
+        stage('Cleanup Builders') {
+            steps {
+                script {
+                    def config = loadMappings()
+                    config.builders.each {
+                        builder,cfg ->                        
+                        builderManager(
+                            action  : "cleanup",
+                            builder : builder,
+                            zone    : cfg.zone
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
