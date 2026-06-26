@@ -1,17 +1,16 @@
 @Library('cicd-library') _
 
-import org.jenkinsci.plugins.gwt.GenericTrigger
-
 def CONFIG = null
 def BUILD_QUEUE = []
-
 
 pipeline {
 
     agent any
 
     triggers {
-        GenericTrigger(token: 'orchestrator-trigger')        
+
+
+        GenericTrigger(token: 'orchestrator')        
     }
 
     options {
@@ -93,8 +92,13 @@ pipeline {
 
                     if (!requests) {
 
-                        echo "No pending requests"
+                        echo """
+                        =====================================
+                        No Pending Requests
+                        =====================================
+                        """
 
+                        currentBuild.result = 'NOT_BUILT'
                         return
                     }
 
@@ -102,16 +106,23 @@ pipeline {
 
                         buildQueue << [
 
-                            app      : req.app,
-                            repo     : req.repo,
-                            branch   : req.branch,
-                            env      : req.env,
-                            actions  : req.actions,
-                            commit   : req.commit
+                            id      : req.id,
+                            app     : req.app,
+                            repo    : req.repo,
+                            branch  : req.branch,
+                            env     : req.env,
+                            actions : req.actions,
+                            commit  : req.commit
                         ]
-
-                        markRequestCompleted(req.id)
                     }
+
+                    echo """
+                    =====================================
+                    Requests Loaded
+                    =====================================
+
+                    COUNT : ${buildQueue.size()}
+                    """
                 }
             }
         }
@@ -646,6 +657,15 @@ pipeline {
                                         )
                                     ]
                                 )
+                            }
+                            // Mark request completed ONLY after all requested pipelines succeed
+                            try {
+
+                                markRequestCompleted(item.id)
+
+                            } catch (e) {
+
+                                error "Failed to update requests.yaml for request ${item.id}: ${e.message}"
                             }
                         }
                     }
