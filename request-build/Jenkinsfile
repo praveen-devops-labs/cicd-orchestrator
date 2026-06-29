@@ -71,7 +71,7 @@ pipeline {
                     ----------------------------------------------------------
                     */
 
-                    if (payload.action != "closed") {
+                    if (payload.action != "labeled") {
 
                         env.PROCESS_REQUEST = "false" 
                         currentBuild.result = "NOT_BUILT"
@@ -81,16 +81,16 @@ pipeline {
                         return
                     }
 
-                    if (!payload.pull_request.merged) {
+                    // if (!payload.pull_request.merged) {
 
-                        env.PROCESS_REQUEST = "false"
+                    //     env.PROCESS_REQUEST = "false"
 
-                        currentBuild.result = "NOT_BUILT"
+                    //     currentBuild.result = "NOT_BUILT"
 
-                        echo "PR closed without merge."
+                    //     echo "PR closed without merge."
 
-                        return
-                    }
+                    //     return
+                    // }
 
                     /*
                     ----------------------------------------------------------
@@ -105,6 +105,17 @@ pipeline {
 
                             it.name
                         }
+
+                    if (!labels.contains("request:deploy")) {
+
+                        env.PROCESS_REQUEST = "false"
+
+                        currentBuild.result = "NOT_BUILT"
+
+                        echo "Deployment request label not found."
+
+                        return
+                    }
 
                     def targetEnv = null
 
@@ -174,7 +185,7 @@ pipeline {
                             "pending",
 
                         requested_by :
-                            payload.pull_request.merged_by.login,
+                        payload.sender.login,
 
                         requested_at :
                             new Date().format(
