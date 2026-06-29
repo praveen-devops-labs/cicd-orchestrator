@@ -11,13 +11,10 @@ pipeline {
         string(name: 'APP_NAME')
         string(name: 'TARGET_ENV')
         string(name: 'COMMIT_FULL')
-
         string(name: 'REPO_URL')
         string(name: 'BRANCH_NAME')
-
         string(name: 'REGISTRY')
         string(name: 'IMAGE_REPO')
-
         string(name: 'DOCKER_REPO')
         string(name: 'DOCKER_BRANCH')
         string(name: 'DOCKER_DIR')
@@ -195,67 +192,29 @@ pipeline {
 
         // ── 4. Build WAR ──────────────────────────────────────────────────
         stage('Build WAR') {
-            
+
             steps {
+
                 script {
 
-                    def warCache = "${env.ARTIFACT_DIR}/${params.TARGET_ENV}-${params.COMMIT_FULL}.war"
+                    notify(
 
-                    def warExists = sh(
-                        script: """
-                        [ -f "${warCache}" ] && echo yes || echo no
-                        """,
-                        returnStdout: true
-                    ).trim()
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "WAR GENERATION STARTED",
+                        webhooks: WEBHOOKS
+                    )
 
-                    if (warExists == "yes") {
+                    WAR_MD5 = buildWar(
 
-                        echo """
-                        =====================================
-                        Reusing Cached WAR
-                        =====================================
-                        FILE : ${warCache}
-                        """
-                        sh """
-                        mkdir -p build-output
-                        cp ${warCache} build-output/app.war
-                        """
-                        sh '''
-                            md5sum build-output/app.war \
-                            | awk '{print \$1}' \
-                            > build-output/app.war.md5
-                        '''
+                        app      : params.APP_NAME,
+                        env      : params.TARGET_ENV,
+                        commit   : params.COMMIT_FULL,
+                        cacheDir : env.ARTIFACT_DIR
+                    )
 
-                    } else {                       
+                    notify(
 
-                        notify(                           
-                            app: params.APP_NAME,
-                            env: params.TARGET_ENV,
-                            msg: "WAR GENERATION STARTED",
-                            webhooks: WEBHOOKS
-                        )
-
-                        buildWar()                        
-
-                        sh """                       
-                        mkdir -p ${env.ARTIFACT_DIR}
-                        cp build-output/app.war '${warCache}'
-                        """
-
-                        echo """
-                        =====================================
-                        WAR Cached
-                        =====================================
-                        FILE : ${warCache}
-                        """
-                    }                    
-
-                    WAR_MD5 = sh(
-                        script: "md5sum build-output/app.war | awk '{print \$1}'",
-                        returnStdout: true
-                    ).trim()                    
-                    
-                    notify(                       
                         app: params.APP_NAME,
                         env: params.TARGET_ENV,
                         msg: "WAR READY",
@@ -263,81 +222,43 @@ pipeline {
                     )
                 }
             }
-        }
+        }  
 
-        // ── 5. Cleanup Old WARs ───────────────────────────────────────────
-        stage('Cleanup Old WARs') {
-            
-            steps {
-                sh """
-                cd ${env.ARTIFACT_DIR}
-                ls -tp *.war | tail -n +4 | xargs -r rm -f
-                """
-                echo """
-                =====================================
-                WAR Cleanup Complete  (keeping latest 3)
-                =====================================
-                """
-            }
-        }        
-
-        // ── 6. Docker Build + Push ───────────────────────────────────────
+        // ── 5. Docker Build + Push ───────────────────────────────────────
         stage('Docker Build + Push') {
-            
+
             steps {
 
                 script {
 
-                    def imageCache =
-                        "${env.IMAGE}:${env.VERSION}"
+                    notify(
 
-                    def imageExists = sh(
-                        script: """
-                        gcloud artifacts docker tags list ${env.IMAGE} \
-                        --format='value(TAG)' 2>/dev/null \
-                        | grep '^${env.VERSION}\$' >/dev/null \
-                        && echo yes || echo no
-                        """,
-                        returnStdout: true
-                    ).trim()
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "DOCKER BUILD STARTED",
+                        webhooks: WEBHOOKS
+                    )
 
-                    if (imageExists == "yes") {
+                    dockerBuild(
 
-                        echo """
-                        =====================================
-                        Docker Image Reused
-                        =====================================
-                        IMAGE : ${imageCache}
-                        =====================================
-                        """
+                        image     : env.IMAGE,
+                        tag       : env.VERSION,
+                        dockerDir : params.DOCKER_DIR,
+                        warFile   : "build-output/app.war"
+                    )
 
-                    } else {
+                    notify(
 
-                        notify(                           
-                            app: params.APP_NAME,
-                            env: params.TARGET_ENV,
-                            msg: "DOCKER BUILD STARTED",
-                            webhooks: WEBHOOKS
-                        )
-
-                        dockerBuild(
-                            image     : env.IMAGE,
-                            tag       : env.VERSION,
-                            dockerDir : params.DOCKER_DIR,
-                            warFile   : "build-output/app.war"
-                        )
-                        notify(                           
-                            app: params.APP_NAME,
-                            env: params.TARGET_ENV,
-                            msg: "IMAGE PUSHED TO REGISTRY",
-                            webhooks: WEBHOOKS
-                        )  
-                    }
+                        app: params.APP_NAME,
+                        env: params.TARGET_ENV,
+                        msg: "IMAGE READY",
+                        webhooks: WEBHOOKS
+                    )
                 }
             }
         }        
 
-        // ── 7. Notify Ready ──────────────────────────────────────────────
+        // ── 6. Notify Ready ──────────────────────────────────────────────
         stage('Notify Ready') {            
             steps {
                 notify(
@@ -353,7 +274,7 @@ pipeline {
             }
         }
 
-        // ── 8. Publish Build Metadata ────────────────────────────────────
+        // ── 7. Publish Build Metadata ────────────────────────────────────
         stage('Publish Build Metadata') {            
 
             steps {

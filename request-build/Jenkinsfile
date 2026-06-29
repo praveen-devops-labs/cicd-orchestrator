@@ -10,28 +10,17 @@ pipeline {
 
         GenericTrigger(
 
-            token: 'request-trigger',
+            token: 'request',
 
             genericVariables: [
 
                 [
                     key: 'POST_CONTENT',
                     value: '$'
-                ],
-
-                [
-                    key: 'ACTION',
-                    value: '$.action'
-                ],
-
-                [
-                    key: 'MERGED',
-                    value: '$.pull_request.merged'
                 ]
             ],
 
             printContributedVariables: true,
-
             printPostContent: true
         )
     }
@@ -49,128 +38,167 @@ pipeline {
 
     stages {
 
-        stage('Validate Event') {
+        stage('Process Deployment Request') {
 
             steps {
 
                 script {
 
-                    env.PROCESS_REQUEST =
-
-                        (env.ACTION == "closed" &&
-                        env.MERGED == "true") ?
-
-                        "true" : "false"
-
-                    echo """
-
-                    ACTION : ${env.ACTION}
-
-                    MERGED : ${env.MERGED}
-
-                    PROCESS: ${env.PROCESS_REQUEST}
-
-                    """
-                }
-            }
-        }
-
-        stage('Create Deployment Request') {
-
-            when {
-
-                expression {
-
-                    env.PROCESS_REQUEST == "true"
-                }
-            }
-
-            steps {
-
-                script {
+                    /*
+                    ----------------------------------------------------------
+                    Read GitHub Webhook
+                    ----------------------------------------------------------
+                    */
 
                     def payload = readJSON(
-
                         text: env.POST_CONTENT
-                    )                    
+                    )
 
-                    def CONFIG = loadMappings()
+                    /*
+                    ----------------------------------------------------------
+                    Only process merged Pull Requests
+                    ----------------------------------------------------------
+                    */
+
+                    if (payload.action != "closed") {
+
+                        currentBuild.result = "NOT_BUILT"
+
+                        echo "Ignoring event: ${payload.action}"
+
+                        return
+                    }
+
+                    if (!payload.pull_request.merged) {
+
+                        currentBuild.result = "NOT_BUILT"
+
+                        echo "PR closed without merge."
+
+                        return
+                    }
+
+                    /*
+                    ----------------------------------------------------------
+                    Read Deployment Labels
+                    ----------------------------------------------------------
+                    */
+
+                    def LABELS = loadLabels()
 
                     def labels =
-                        payload.pull_request.labels.collect { it.name }
+                        payload.pull_request.labels.collect {
+
+                            it.name
+                        }
 
                     def targetEnv = null
+
                     def actions = []
 
                     labels.each { label ->
 
                         if (CONFIG.labels.env.containsKey(label)) {
 
-                            targetEnv = CONFIG.labels.env[label]
+                            targetEnv =
+                                CONFIG.labels.env[label]
                         }
 
                         if (CONFIG.labels.actions.containsKey(label)) {
 
-                            actions = CONFIG.labels.actions[label]
+                            actions =
+                                CONFIG.labels.actions[label]
                         }
                     }
 
-                    if (!targetEnv) {
+                    /*
+                    ----------------------------------------------------------
+                    Ignore PRs without deployment labels
+                    ----------------------------------------------------------
+                    */
 
-                        error "No environment label found."
+                    if (!targetEnv || actions.isEmpty()) {
+
+                        currentBuild.result = "NOT_BUILT"
+
+                        echo """
+                        No deployment labels found.
+
+                        Labels:
+
+                        ${labels.join(", ")}
+                        """
+
+                        return
                     }
 
-                    if (!actions) {
-
-                        error "No action label found."
-                    }
+                    /*
+                    ----------------------------------------------------------
+                    Create Deployment Request
+                    ----------------------------------------------------------
+                    */
 
                     def request = [
 
-                        id           : UUID.randomUUID().toString(),
+                        id : UUID.randomUUID().toString(),
 
-                        app          : payload.repository.name,
+                        app :
+                            payload.repository.name,
 
-                        pr           : payload.pull_request.number,
+                        pr :
+                            payload.pull_request.number,
 
-                        env          : targetEnv,
+                        env :
+                            targetEnv,
 
-                        actions      : actions,
+                        actions :
+                            actions,
 
-                        status       : "pending",
+                        status :
+                            "pending",
 
-                        requested_by : payload.pull_request.merged_by.login,
+                        requested_by :
+                            payload.pull_request.merged_by.login,
 
-                        requested_at : new Date().format(
-
-                            "yyyy-MM-dd'T'HH:mm:ss'Z'",
-
-                            TimeZone.getTimeZone("UTC")
-                        )
+                        requested_at :
+                            new Date().format(
+                                "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                                TimeZone.getTimeZone("UTC")
+                            )
                     ]
 
                     updateRequests(
 
                         action : "add",
 
-                        request: request
+                        request : request
                     )
+
+                    /*
+                    ----------------------------------------------------------
+                    Summary
+                    ----------------------------------------------------------
+                    */
 
                     echo """
 
                     =====================================
-                    REQUEST CREATED
+
+                    DEPLOYMENT REQUEST CREATED
+
                     =====================================
 
-                    APP      : ${request.app}
+                    APP        : ${request.app}
 
-                    PR       : #${request.pr}
+                    PR         : #${request.pr}
 
-                    ENV      : ${request.env}
+                    ENV        : ${request.env}
 
-                    ACTIONS  : ${request.actions}
+                    ACTIONS    : ${request.actions.join(',')}
 
-                    REQUESTED BY : ${request.requested_by}
+                    REQUESTED  : ${request.requested_by}
+
+                    STATUS     : ${request.status}
 
                     """
                 }
@@ -179,19 +207,11 @@ pipeline {
 
         stage('Trigger Orchestrator') {
 
-            when {
-
-                expression {
-
-                    return env.PROCESS_REQUEST == "true"
-                }
-            }
-
             steps {
 
                 build(
 
-                    job: "Orchestrator-Pipeline",
+                    job: 'Orchestrator-Pipeline',
 
                     wait: false
                 )

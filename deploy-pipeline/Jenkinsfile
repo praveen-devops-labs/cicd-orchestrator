@@ -159,13 +159,13 @@ pipeline {
                                 webhooks: WEBHOOKS
                             )
 
-                            deploy(
-                                deployType : env.DEPLOY_TYPE,
+                            deploy(            
+                                strategy   : DEPLOY.strategy,
+                                deployType : env.DEPLOY_TYPE,                    
                                 sshHost    : env.SSH_HOST,
                                 context    : target.context,
                                 namespace  : env.NAMESPACE,
-                                statefulset: target.sts,
-                                image      : env.IMAGE
+                                statefulset: target.sts,                                
                             )
 
                             notify(                               
@@ -176,8 +176,6 @@ pipeline {
                             )                            
                         }
                     }
-
-                    parallel deployJobs
 
                     parallel deployJobs
 
