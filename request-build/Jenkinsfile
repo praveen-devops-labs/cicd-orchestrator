@@ -1,6 +1,5 @@
 @Library('cicd-library') _
 
-import groovy.json.JsonSlurperClassic
 import java.util.UUID
 
 pipeline {
@@ -56,29 +55,20 @@ pipeline {
 
                 script {
 
-                    if (env.ACTION != "closed") {
+                    env.PROCESS_REQUEST =
 
-                        currentBuild.result = "NOT_BUILT"
+                        (env.ACTION == "closed" &&
+                        env.MERGED == "true") ?
 
-                        echo "Ignoring GitHub event."
-
-                        return
-                    }
-
-                    if (env.MERGED != "true") {
-
-                        currentBuild.result = "NOT_BUILT"
-
-                        echo "Pull Request was closed without merge."
-
-                        return
-                    }
+                        "true" : "false"
 
                     echo """
 
-                    =====================================
-                    MERGED PULL REQUEST
-                    =====================================
+                    ACTION : ${env.ACTION}
+
+                    MERGED : ${env.MERGED}
+
+                    PROCESS: ${env.PROCESS_REQUEST}
 
                     """
                 }
@@ -87,12 +77,22 @@ pipeline {
 
         stage('Create Deployment Request') {
 
+            when {
+
+                expression {
+
+                    env.PROCESS_REQUEST == "true"
+                }
+            }
+
             steps {
 
                 script {
 
-                    def payload =
-                        new JsonSlurperClassic().parseText(env.POST_CONTENT)
+                    def payload = readJSON(
+
+                        text: env.POST_CONTENT
+                    )
 
                     def CONFIG = loadMappings()
 
