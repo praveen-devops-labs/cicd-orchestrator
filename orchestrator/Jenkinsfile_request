@@ -109,8 +109,8 @@ pipeline {
 
                         """
                         APP     : ${it.app}
+                        PR      : ${it.pr}
                         ENV     : ${it.env}
-                        BRANCH  : ${it.branch}
                         ACTIONS : ${it.actions.join(',')}
                         """
                     }.join('\n')}
@@ -143,6 +143,8 @@ pipeline {
 
                             app     : req.app,
 
+                            pr      : req.pr,
+
                             env     : req.env,
 
                             actions : req.actions,
@@ -154,10 +156,28 @@ pipeline {
                     echo """
 
                     =====================================
-                    Requests Resolved
+                    Resolved Requests
                     =====================================
 
-                    ITEMS : ${BUILD_QUEUE.size()}
+                    ${BUILD_QUEUE.collect {
+
+                    """
+
+                    APP      : ${it.app}
+
+                    PR       : #${it.pr}
+
+                    ENV      : ${it.env}
+
+                    REPO     : ${it.config.mapping.repo}
+
+                    BRANCH   : ${it.config.mapping.branch}
+
+                    ACTIONS  : ${it.actions.join(',')}
+
+                    """
+
+                    }.join('\n')}
 
                     """
                 }
@@ -295,7 +315,13 @@ pipeline {
                         ${item.app} (${item.env})
                         =====================================
 
+                        REPO         : ${mapping.repo}
+
+                        BRANCH       : ${mapping.branch}
+
                         COMMIT       : ${commit}
+
+                        LATEST       : ${commit}
 
                         BUILD STATE  : ${buildState}
 
@@ -347,6 +373,8 @@ pipeline {
                         """
 
                         APP        : ${it.app}
+
+                        PR         : ${it.pr}
 
                         ENV        : ${it.env}
 
@@ -480,9 +508,23 @@ pipeline {
                             ${item.app} (${item.env})
                             =====================================
 
-                            BUILD  : ${item.needBuild}
-                            FILES  : ${item.needFC}
-                            DEPLOY : ${item.needDeploy}
+                            APP        : ${item.app}
+
+                            PR         : #${item.pr}
+
+                            ENV        : ${item.env}
+
+                            REPO       : ${item.config.mapping.repo}
+
+                            BRANCH     : ${item.config.mapping.branch}
+
+                            COMMIT     : ${item.commit}
+
+                            BUILD      : ${item.needBuild}
+
+                            FILES      : ${item.needFC}
+
+                            DEPLOY     : ${item.needDeploy}
 
                             """
 
@@ -508,6 +550,24 @@ pipeline {
 
                             if (item.needBuild) {
 
+                                echo """
+
+                                =====================================
+                                Build Pipeline
+                                =====================================
+
+                                APP      : ${item.app}
+
+                                ENV      : ${item.env}
+
+                                REPO     : ${item.config.mapping.repo}
+
+                                BRANCH   : ${item.config.mapping.branch}
+
+                                COMMIT   : ${item.commit}
+
+                                """
+
                                 buildInfo = runBuild(item)
                             }
 
@@ -519,6 +579,24 @@ pipeline {
 
                             if (item.needFC) {
 
+                                echo """
+
+                                =====================================
+                                Files Pipeline
+                                =====================================
+
+                                APP      : ${item.app}
+
+                                ENV      : ${item.env}
+
+                                REPO     : ${item.config.mapping.repo}
+
+                                BRANCH   : ${item.config.mapping.branch}
+
+                                COMMIT   : ${item.commit}
+
+                                """
+
                                 runFiles(item)
                             }
 
@@ -529,6 +607,24 @@ pipeline {
                             */
 
                             if (item.needDeploy) {
+
+                                echo """
+
+                                =====================================
+                                Deploy Pipeline
+                                =====================================
+
+                                APP      : ${item.app}
+
+                                ENV      : ${item.env}
+
+                                REPO     : ${item.config.mapping.repo}
+
+                                BRANCH   : ${item.config.mapping.branch}
+
+                                COMMIT   : ${item.commit}
+
+                                """
 
                                 runDeploy(item, buildInfo)
                             }
@@ -569,38 +665,7 @@ pipeline {
                     return
                 }
 
-                def builders = [:]
-
-                /*
-                |--------------------------------------------------------------------------
-                | Determine Used Builders
-                |--------------------------------------------------------------------------
-                */
-
-                BUILD_QUEUE.each { item ->
-
-                    if (item.needBuild) {
-
-                        def builder = selectBuilder(
-                            "build",
-                            CONFIG
-                        )
-
-                        builders[builder] =
-                            CONFIG.builders[builder]
-                    }
-
-                    if (item.needFC) {
-
-                        def builder = selectBuilder(
-                            "files",
-                            CONFIG
-                        )
-
-                        builders[builder] =
-                            CONFIG.builders[builder]
-                    }
-                }
+                def builders = getRequiredBuilders()
 
                 if (builders.isEmpty()) {
 
@@ -1140,32 +1205,7 @@ def runDeploy(item, buildInfo) {
 
 def getRequiredBuilders() {
 
-    def builders = [:]
-
-    BUILD_QUEUE.each { item ->
-
-        if (item.needBuild) {
-
-            def builder = selectBuilder(
-                "build",
-                CONFIG
-            )
-
-            builders[builder] =
-                CONFIG.builders[builder]
-        }
-
-        if (item.needFC) {
-
-            def builder = selectBuilder(
-                "files",
-                CONFIG
-            )
-
-            builders[builder] =
-                CONFIG.builders[builder]
-        }
-    }
+    def builders = getRequiredBuilders()
 
     return builders
 }

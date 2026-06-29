@@ -93,6 +93,12 @@ pipeline {
 
                         text: env.POST_CONTENT
                     )
+                    if (payload.action != "closed" ||
+                        !payload.pull_request?.merged) {
+
+                        currentBuild.result = "NOT_BUILT"
+                        return
+                    }
 
                     def CONFIG = loadMappings()
 
@@ -184,6 +190,14 @@ pipeline {
         }
 
         stage('Trigger Orchestrator') {
+
+            when {
+
+                expression {
+
+                    return env.PROCESS_REQUEST == "true"
+                }
+            }
 
             steps {
 
