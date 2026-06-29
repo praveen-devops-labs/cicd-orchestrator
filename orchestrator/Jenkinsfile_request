@@ -88,7 +88,8 @@ pipeline {
                     =====================================
                     """
 
-                    CONFIG = loadMappings()                    
+                    CONFIG = loadMappings()
+                    def envCfg = item.config.environment                    
                     env.DOCKER_REPO =
                         CONFIG.docker.repo ?: ''
 
@@ -815,7 +816,7 @@ def runBuild(item) {
         branch       : item.config.mapping.branch,
         commit       : item.commit,
         short_commit : item.commit.take(7),
-        version      : metadata.version ?: ""
+        version      : metadata.version ?: "",
         md5          : metadata.md5 ?: "",
         image        : metadata.image ?: "",
         build        : result.number,
