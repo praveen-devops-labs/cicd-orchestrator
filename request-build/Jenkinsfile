@@ -10,7 +10,7 @@ pipeline {
 
         GenericTrigger(
 
-            token: 'request',
+            token: 'request-trigger',
 
             genericVariables: [
 
@@ -54,6 +54,17 @@ pipeline {
                         text: env.POST_CONTENT
                     )
 
+                    if (!payload.pull_request) {
+
+                        currentBuild.result = "NOT_BUILT"
+
+                        env.PROCESS_REQUEST = "false"
+
+                        echo "Ignoring non Pull Request event."
+
+                        return
+                    }
+
                     /*
                     ----------------------------------------------------------
                     Only process merged Pull Requests
@@ -62,6 +73,7 @@ pipeline {
 
                     if (payload.action != "closed") {
 
+                        env.PROCESS_REQUEST = "false" 
                         currentBuild.result = "NOT_BUILT"
 
                         echo "Ignoring event: ${payload.action}"
@@ -70,6 +82,8 @@ pipeline {
                     }
 
                     if (!payload.pull_request.merged) {
+
+                        env.PROCESS_REQUEST = "false"
 
                         currentBuild.result = "NOT_BUILT"
 
@@ -84,7 +98,7 @@ pipeline {
                     ----------------------------------------------------------
                     */
 
-                    def LABELS = loadLabels()
+                    def CONFIG = loadMappings()
 
                     def labels =
                         payload.pull_request.labels.collect {
@@ -118,6 +132,8 @@ pipeline {
                     */
 
                     if (!targetEnv || actions.isEmpty()) {
+
+                        env.PROCESS_REQUEST = "false"
 
                         currentBuild.result = "NOT_BUILT"
 
@@ -174,6 +190,8 @@ pipeline {
                         request : request
                     )
 
+                    env.PROCESS_REQUEST = "true"
+
                     /*
                     ----------------------------------------------------------
                     Summary
@@ -206,6 +224,14 @@ pipeline {
         }
 
         stage('Trigger Orchestrator') {
+
+            when {
+
+                expression {
+
+                    return env.PROCESS_REQUEST == "true"
+                }
+            }
 
             steps {
 
