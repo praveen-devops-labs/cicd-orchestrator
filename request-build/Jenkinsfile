@@ -54,11 +54,17 @@ pipeline {
                         text: env.POST_CONTENT
                     )
 
+                    /*
+                    ----------------------------------------------------------
+                    Only Pull Request events
+                    ----------------------------------------------------------
+                    */
+
                     if (!payload.pull_request) {
 
-                        currentBuild.result = "NOT_BUILT"
-
                         env.PROCESS_REQUEST = "false"
+
+                        currentBuild.result = "NOT_BUILT"
 
                         echo "Ignoring non Pull Request event."
 
@@ -67,13 +73,14 @@ pipeline {
 
                     /*
                     ----------------------------------------------------------
-                    Only process merged Pull Requests
+                    Only Label Events
                     ----------------------------------------------------------
                     */
 
                     if (payload.action != "labeled") {
 
-                        env.PROCESS_REQUEST = "false" 
+                        env.PROCESS_REQUEST = "false"
+
                         currentBuild.result = "NOT_BUILT"
 
                         echo "Ignoring event: ${payload.action}"
@@ -81,16 +88,23 @@ pipeline {
                         return
                     }
 
-                    // if (!payload.pull_request.merged) {
+                    /*
+                    ----------------------------------------------------------
+                    Only Deployment Request Label
+                    ----------------------------------------------------------
+                    */
 
-                    //     env.PROCESS_REQUEST = "false"
+                    if (payload.label?.name != "request:deploy") {
 
-                    //     currentBuild.result = "NOT_BUILT"
+                        env.PROCESS_REQUEST = "false"
 
-                    //     echo "PR closed without merge."
+                        currentBuild.result = "NOT_BUILT"
 
-                    //     return
-                    // }
+                        echo "Ignoring label: ${payload.label?.name}"
+
+                        return
+                    }
+
 
                     /*
                     ----------------------------------------------------------
@@ -185,7 +199,7 @@ pipeline {
                             "pending",
 
                         requested_by :
-                        payload.sender.login,
+                            payload.sender.login,
 
                         requested_at :
                             new Date().format(
