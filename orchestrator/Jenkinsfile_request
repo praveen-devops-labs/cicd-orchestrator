@@ -1,0 +1,1175 @@
+@Library('cicd-library') _
+
+def CONFIG = null
+def REQUESTS = []
+def BUILD_QUEUE = []
+
+
+pipeline {
+
+    agent any
+
+    triggers {
+        GenericTrigger(token: 'orchestrator-trigger')        
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timestamps()
+    }
+
+    environment {
+
+        BUILD_STATE_DIR =
+        "/u01/jenkins/jenkins/build-state"
+
+        DEPLOY_STATE_DIR =
+        "/u01/jenkins/jenkins/deploy-state"
+
+        FILEGEN_STATE_DIR =
+        "/u01/jenkins/jenkins/filegen-state"
+    }
+
+    stages {
+
+        stage('Load Mapping') {
+
+            steps {
+
+                script {
+
+                    echo """
+                    =====================================
+                    Loading Configuration
+                    =====================================
+                    """
+
+                    CONFIG = loadMappings()
+                    echo """
+                    CONFIG BUILDERS:
+                    ${writeJSON(returnText:true, json:CONFIG.builders)}
+
+                    CONFIG WORKLOADS:
+                    ${writeJSON(returnText:true, json:CONFIG.workloads)}
+                    """
+                    env.DOCKER_REPO =
+                        CONFIG.docker.repo ?: ''
+
+                    env.DOCKER_BRANCH =
+                        CONFIG.docker.branch ?: ''
+
+                    env.DOCKER_DIR =
+                        CONFIG.docker.context_dir ?: ''
+
+                    echo """
+                    =====================================
+                    Configuration Loaded
+                    =====================================
+
+                    MAPPINGS     : ${CONFIG.mappings.size()}
+                    BUILDERS     : ${CONFIG.builders.size()}
+                    ENVIRONMENTS : ${CONFIG.environments.keySet().join(', ')}
+
+                    DOCKER REPO  : ${env.DOCKER_REPO}
+                    """
+                }
+            }
+        }
+
+        stage('Load Pending Requests') {
+
+            steps {
+
+                script {
+
+                    REQUESTS = loadRequests()
+
+                    if (REQUESTS.isEmpty()) {
+
+                        currentBuild.description =
+
+                        "No Pending Requests"
+
+                        echo """
+
+                        =====================================
+                        No Pending Deployment Requests
+                        =====================================
+
+                        """
+
+                        return
+                    }
+
+                    echo """
+
+                    =====================================
+                    Pending Requests
+                    =====================================
+
+                    COUNT : ${REQUESTS.size()}
+
+                    ${REQUESTS.collect {
+
+                        """
+                        APP     : ${it.app}
+                        ENV     : ${it.env}
+                        BRANCH  : ${it.branch}
+                        ACTIONS : ${it.actions.join(',')}
+                        """
+                    }.join('\n')}
+
+                    """
+                }
+            }
+        }
+
+        stage('Resolve Requests') {
+
+            steps {
+
+                script {
+
+                    REQUESTS.each { req ->
+
+                        def cfg = loadConfig(
+
+                            CONFIG,
+
+                            req.app,
+
+                            req.env
+                        )
+
+                        BUILD_QUEUE << [
+
+                            id      : req.id,
+
+                            app     : req.app,
+
+                            env     : req.env,
+
+                            actions : req.actions,
+
+                            config  : cfg
+                        ]
+                    }
+
+                    echo """
+
+                    =====================================
+                    Requests Resolved
+                    =====================================
+
+                    ITEMS : ${BUILD_QUEUE.size()}
+
+                    """
+                }
+            }
+        }        
+
+        stage('Detect Changes') {
+
+            steps {
+
+                script {
+
+                    BUILD_QUEUE.each { item ->
+
+                        def mapping = item.config.mapping
+                        def envCfg  = item.config.environment
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Latest Commit
+                        |--------------------------------------------------------------------------
+                        */
+
+                        def commit = sh(
+
+                            script: """
+                                git ls-remote ${mapping.repo} \
+                                refs/heads/${mapping.branch} |
+                                cut -f1
+                            """,
+
+                            returnStdout: true
+
+                        ).trim()
+
+                        if (!commit) {
+
+                            error """
+
+                            Unable to determine latest commit
+
+                            APP    : ${item.app}
+                            BRANCH : ${mapping.branch}
+
+                            """
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Current State
+                        |--------------------------------------------------------------------------
+                        */
+
+                        def buildState = sh(
+
+                            script: """
+                                [ -f ${env.BUILD_STATE_DIR}/${item.app}/${item.env}.commit ] &&
+                                cat ${env.BUILD_STATE_DIR}/${item.app}/${item.env}.commit ||
+                                echo none
+                            """,
+
+                            returnStdout: true
+
+                        ).trim()
+
+                        def fileState = sh(
+
+                            script: """
+                                [ -f ${env.FILEGEN_STATE_DIR}/${item.app}/${item.env}.commit ] &&
+                                cat ${env.FILEGEN_STATE_DIR}/${item.app}/${item.env}.commit ||
+                                echo none
+                            """,
+
+                            returnStdout: true
+
+                        ).trim()
+
+                        def deployState = sh(
+
+                            script: """
+                                [ -f ${env.DEPLOY_STATE_DIR}/${item.app}/${item.env}.commit ] &&
+                                cat ${env.DEPLOY_STATE_DIR}/${item.app}/${item.env}.commit ||
+                                echo none
+                            """,
+
+                            returnStdout: true
+
+                        ).trim()
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Determine Work
+                        |--------------------------------------------------------------------------
+                        */
+
+                        item.commit = commit
+
+                        item.needBuild =
+
+                            item.actions.contains("build") &&
+                            commit != buildState
+
+                        item.needFC =
+
+                            item.actions.contains("FC") &&
+                            commit != fileState
+
+                        item.needDeploy =
+
+                            item.actions.contains("deploy") &&
+                            commit != deployState
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Notifications
+                        |--------------------------------------------------------------------------
+                        */
+
+                        item.notificationWebhooks = (
+
+                            CONFIG.notifications.default ?: []
+
+                        ) + (
+
+                            CONFIG.notifications.environments[item.env] ?: []
+
+                        )
+
+                        item.notificationWebhooks =
+                            item.notificationWebhooks.unique()
+
+                        echo """
+
+                        =====================================
+                        ${item.app} (${item.env})
+                        =====================================
+
+                        COMMIT       : ${commit}
+
+                        BUILD STATE  : ${buildState}
+
+                        FILE STATE   : ${fileState}
+
+                        DEPLOY STATE : ${deployState}
+
+                        BUILD        : ${item.needBuild}
+
+                        FILES        : ${item.needFC}
+
+                        DEPLOY       : ${item.needDeploy}
+
+                        """
+                    }
+
+                    def hasChanges = BUILD_QUEUE.any {
+
+                        it.needBuild ||
+                        it.needFC ||
+                        it.needDeploy
+                    }
+
+                    env.HAS_CHANGES =
+
+                        hasChanges ? "true" : "false"
+
+                    if (!hasChanges) {
+
+                        currentBuild.description =
+
+                            "No Changes"
+
+                        echo """
+
+                        =====================================
+                        Nothing To Build
+                        =====================================
+
+                        """
+                        echo """
+
+                        =====================================
+                        Queue Summary
+                        =====================================
+
+                        ${BUILD_QUEUE.collect {
+
+                        """
+
+                        APP        : ${it.app}
+
+                        ENV        : ${it.env}
+
+                        BUILD      : ${it.needBuild}
+
+                        FILES      : ${it.needFC}
+
+                        DEPLOY     : ${it.needDeploy}
+
+                        """
+
+                        }.join('\n')}
+
+                        """
+
+                        return
+                    }
+                }
+            }
+        }
+
+        stage('Start Builder VMs') {
+
+            when {
+
+                expression {
+
+                    env.HAS_CHANGES == "true"
+                }
+            }
+
+            steps {
+
+                script {
+
+                    def builders = [:]
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Determine Required Builders
+                    |--------------------------------------------------------------------------
+                    */
+
+                    BUILD_QUEUE.each { item ->
+
+                        if (item.needBuild) {
+
+                            def builder = selectBuilder(
+                                "build",
+                                CONFIG
+                            )
+
+                            builders[builder] =
+                                CONFIG.builders[builder]
+                        }
+
+                        if (item.needFC) {
+
+                            def builder = selectBuilder(
+                                "files",
+                                CONFIG
+                            )
+
+                            builders[builder] =
+                                CONFIG.builders[builder]
+                        }
+                    }
+
+                    if (builders.isEmpty()) {
+
+                        echo "No Builder VM required."
+
+                        return
+                    }
+
+                    echo """
+
+                    =====================================
+                    Starting Builder VMs
+                    =====================================
+
+                    ${builders.keySet().join('\n')}
+
+                    """
+
+                    def jobs = [:]
+
+                    builders.each { name, cfg ->
+
+                        jobs[name] = {
+
+                            builderManager(
+
+                                action  : "acquire",
+
+                                builder : name,
+
+                                zone    : cfg.zone
+                            )
+                        }
+                    }
+
+                    parallel jobs
+                }
+            }
+        }
+
+        stage('Run Pipelines') {
+
+            when {
+
+                expression {
+
+                    env.HAS_CHANGES == "true"
+                }
+            }
+
+            steps {
+
+                script {
+
+                    def jobs = [:]
+
+                    BUILD_QUEUE.each { item ->
+
+                        jobs["${item.app}-${item.env}"] = {
+
+                            echo """
+
+                            =====================================
+                            ${item.app} (${item.env})
+                            =====================================
+
+                            BUILD  : ${item.needBuild}
+                            FILES  : ${item.needFC}
+                            DEPLOY : ${item.needDeploy}
+
+                            """
+
+                            notify(
+
+                                app      : item.app,
+
+                                env      : item.env,
+
+                                msg      : "PIPELINE REQUEST",
+
+                                commit   : item.commit,
+
+                                webhooks : item.notificationWebhooks
+                            )
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | BUILD
+                            |--------------------------------------------------------------------------
+                            */
+                            def buildInfo = null
+
+                            if (item.needBuild) {
+
+                                buildInfo = runBuild(item)
+                            }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | FILES
+                            |--------------------------------------------------------------------------
+                            */
+
+                            if (item.needFC) {
+
+                                runFiles(item)
+                            }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | DEPLOY
+                            |--------------------------------------------------------------------------
+                            */
+
+                            if (item.needDeploy) {
+
+                                runDeploy(item, buildInfo)
+                            }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Remove Request
+                            |--------------------------------------------------------------------------
+                            */
+
+                            updateRequests(
+
+                                "Remove completed request"
+
+                            ) {
+
+                                it.requests.removeAll {
+
+                                    r -> r.id == item.id
+                                }
+                            }
+                        }
+                    }
+
+                    parallel jobs
+                }
+            }
+        }
+    }    
+    post {
+
+        always {
+
+            script {
+
+                if (env.HAS_CHANGES != "true") {
+
+                    return
+                }
+
+                def builders = [:]
+
+                /*
+                |--------------------------------------------------------------------------
+                | Determine Used Builders
+                |--------------------------------------------------------------------------
+                */
+
+                BUILD_QUEUE.each { item ->
+
+                    if (item.needBuild) {
+
+                        def builder = selectBuilder(
+                            "build",
+                            CONFIG
+                        )
+
+                        builders[builder] =
+                            CONFIG.builders[builder]
+                    }
+
+                    if (item.needFC) {
+
+                        def builder = selectBuilder(
+                            "files",
+                            CONFIG
+                        )
+
+                        builders[builder] =
+                            CONFIG.builders[builder]
+                    }
+                }
+
+                if (builders.isEmpty()) {
+
+                    return
+                }
+
+                def jobs = [:]
+
+                builders.each { name, cfg ->
+
+                    jobs[name] = {
+
+                        echo """
+
+                        =====================================
+                        Releasing Builder
+                        =====================================
+
+                        BUILDER : ${name}
+                        ZONE    : ${cfg.zone}
+
+                        """
+
+                        try {
+
+                            builderManager(
+
+                                action:"release",
+
+                                builder:name,
+
+                                zone:cfg.zone
+                            )
+
+                        } finally {
+
+                            sleep(time:10, unit:'MINUTES')
+
+                            builderManager(
+
+                                action:"idleShutdown",
+
+                                builder:name,
+
+                                zone:cfg.zone
+                            )
+                        }
+
+                        builderManager(
+
+                            action  : "idleShutdown",
+
+                            builder : name,
+
+                            zone    : cfg.zone
+                        )
+                    }
+                }
+
+                parallel jobs
+
+                echo """
+
+                =====================================
+                Builder VM(s) Released
+                =====================================
+
+                """
+            }
+        }
+            
+
+        failure {
+
+            script {
+
+                notify(                    
+                    app: "orchestrator",                    
+                    msg: "FAILED ❌",
+                    webhooks: CONFIG.notifications.default
+                )
+            }
+        }
+
+        success {
+
+            echo """
+            =====================================
+            ✅ ORCHESTRATOR SUCCESS
+            =====================================
+            """
+        }
+    }
+}
+
+def runBuild(item) {
+
+    def result = build(
+
+        job: 'Build-Pipeline',
+
+        wait: true,
+
+        propagate: true,
+
+        parameters: [
+
+            string(name:'APP_NAME', value:item.app),
+
+            string(name:'TARGET_ENV', value:item.env),
+
+            string(name:'COMMIT_FULL', value:item.commit),
+
+            string(
+
+                name:'REPO_URL',
+
+                value:item.config.mapping.repo
+            ),
+
+            string(
+
+                name:'BRANCH_NAME',
+
+                value:item.config.mapping.branch
+            ),
+
+            string(name:'REGISTRY',
+                value:item.config.environment.docker_build.container_registry),
+
+            string(name:'IMAGE_REPO',
+                value:item.config.environment.docker_build.image_repo),
+
+            string(name:'DOCKER_REPO',
+                value:env.DOCKER_REPO),
+
+            string(name:'DOCKER_BRANCH',
+                value:env.DOCKER_BRANCH),
+
+            string(name:'DOCKER_DIR',
+                value:env.DOCKER_DIR),
+
+            text(
+
+                name:'NOTIFICATION_WEBHOOKS',
+
+                value:writeJSON(
+
+                    returnText:true,
+
+                    json:item.notificationWebhooks
+                )
+            )
+        ]
+    )
+
+    /*
+    |--------------------------------------------------------------------------
+    | Update Build State
+    |--------------------------------------------------------------------------
+    */
+
+    sh """
+
+    mkdir -p ${env.BUILD_STATE_DIR}/${item.app}
+
+    echo ${item.commit} > \
+    ${env.BUILD_STATE_DIR}/${item.app}/${item.env}.commit
+
+    """
+
+    /*
+    |--------------------------------------------------------------------------
+    | Read Build Metadata
+    |--------------------------------------------------------------------------
+    */
+
+    def metadata =
+
+        result.description ?
+
+        readJSON(text:result.description) :
+
+        [:]
+
+    /*
+    |--------------------------------------------------------------------------
+    | History
+    |--------------------------------------------------------------------------
+    */
+
+    buildHistory([
+
+        app          : item.app,
+
+        env          : item.env,
+
+        branch       : item.config.mapping.branch,
+
+        commit       : item.commit,
+
+        short_commit : item.commit.take(7),
+
+        version      : metadata.version ?: "",
+
+        md5          : metadata.md5 ?: "",
+
+        image        : metadata.image ?: "",
+
+        build        : result.number,
+
+        type         : "BUILD"
+    ])
+
+    notifyHistory([
+
+        app          : item.app,
+
+        env          : item.env,
+
+        branch       : item.config.mapping.branch,
+
+        commit       : item.commit,
+
+        short_commit : item.commit.take(7),
+
+        version      : metadata.version ?: "",
+
+        md5          : metadata.md5 ?: "",
+
+        image        : metadata.image ?: "",
+
+        build        : result.number,
+
+        type         : "BUILD"
+    ])
+
+    return [
+
+        version : metadata.version ?: "",
+
+        image   : metadata.image ?: "",
+
+        md5     : metadata.md5 ?: "",
+
+        build   : result.number
+    ]
+}
+
+def runFiles(item) {
+
+    def result = build(
+
+        job: 'Files-Pipeline',
+
+        wait: true,
+
+        propagate: true,
+
+        parameters: [
+
+            string(name:'APP_NAME', value:item.app),
+
+            string(name:'TARGET_ENV', value:item.env),
+
+            string(name:'COMMIT_FULL', value:item.commit),
+
+            string(
+
+                name:'REPO_URL',
+
+                value:item.config.mapping.repo
+            ),
+
+            string(
+
+                name:'BRANCH_NAME',
+
+                value:item.config.mapping.branch
+            ),
+
+            string(
+                name:'FC_DESTINATION',
+                value:item.config.environment.cdn.fc_destination
+            ),
+
+            string(
+                name:'CDN_KEEP',
+                value:"${item.config.environment.cdn.keep_version}"
+            ),
+
+            string(
+                name:'GCP_BUCKET',
+                value:item.config.environment.cdn.gcp_bucket
+            ),
+
+            string(
+                name:'GCP_URL',
+                value:item.config.environment.cdn.gcp_url
+            ),
+
+            string(
+                name:'AWS_S3_BUCKET',
+                value:item.config.environment.cdn.aws_bucket
+            ),
+
+            string(
+                name:'AWS_S3_URL',
+                value:item.config.environment.cdn.aws_url
+            ),
+
+            string(
+                name:'SSH_HOST',
+                value:item.config.environment.shared.ssh_host
+            ),
+
+            string(
+                name:'ES_URL',
+                value:item.config.environment.switch.elasticsearch.url
+            ),
+
+            string(
+                name:'ES_INDEX',
+                value:item.config.environment.switch.elasticsearch.index
+            ),
+
+            string(
+                name:'GCP_DOC_ID',
+                value:item.config.environment.switch.elasticsearch.gcp.doc_id
+            ),
+
+            string(
+                name:'AWS_DOC_ID',
+                value:item.config.environment.switch.elasticsearch.aws.doc_id
+            ),
+
+            string(
+                name:'CACHE_ENABLED',
+                value:"${item.config.environment.cache_clear.enabled}"
+            ),
+
+            text(
+
+                name:'CACHE_TARGETS',
+
+                value:writeJSON(
+
+                    returnText:true,
+
+                    json:item.config.environment.cache_clear.targets
+                )
+            ),
+
+            string(
+                name:'CACHE_API',
+                value:item.config.environment.cache_clear.api_key_credential
+            ),
+
+            string(
+                name:'CACHE_ACCESS',
+                value:item.config.environment.cache_clear.access_key_credential
+            ),
+
+            text(
+
+                name:'NOTIFICATION_WEBHOOKS',
+
+                value:writeJSON(
+
+                    returnText:true,
+
+                    json:item.notificationWebhooks
+                )
+            )
+        ]
+    )
+
+    sh """
+
+    mkdir -p ${env.FILEGEN_STATE_DIR}/${item.app}
+
+    echo ${item.commit} > \
+    ${env.FILEGEN_STATE_DIR}/${item.app}/${item.env}.commit
+
+    """
+
+    def version = result.description ?: ""
+
+    def history = [
+
+        app          : item.app,
+
+        env          : item.env,
+
+        branch       : item.config.mapping.branch,
+
+        commit       : item.commit,
+
+        short_commit : item.commit.take(7),
+
+        version      : version,
+
+        gcp_url      : item.config.environment.cdn.gcp_url ?
+                        "${item.config.environment.cdn.gcp_url}/${version}" : "",
+
+        aws_url      : item.config.environment.cdn.aws_url ?
+                        "${item.config.environment.cdn.aws_url}/${version}" : "",
+
+        build        : result.number,
+
+        type         : "FILES"
+    ]
+
+    filesHistory(history)
+
+    notifyHistory(history)
+
+    return [
+
+        version : version,
+
+        build   : result.number
+    ]
+}
+
+def runDeploy(item, buildInfo) {
+
+    if (!buildInfo?.version) {
+
+        error """
+
+        Build version not found.
+
+        Cannot deploy:
+
+        APP : ${item.app}
+        ENV : ${item.env}
+
+        """
+    }
+
+    def result = build(
+
+        job:'Deploy-Pipeline',
+
+        wait: true,
+
+        propagate: true,
+
+        parameters: [
+
+            string(
+                name:'APP_NAME',
+                value:item.app
+            ),
+
+            string(
+                name:'TARGET_ENV',
+                value:item.env
+            ),
+
+            string(
+                name:'VERSION',
+                value:buildInfo.version
+            ),
+
+            string(
+                name:'COMMIT_FULL',
+                value:item.commit
+            ),
+
+            text(
+
+                name:'NOTIFICATION_WEBHOOKS',
+
+                value:writeJSON(
+
+                    returnText:true,
+
+                    json:item.notificationWebhooks
+                )
+            )
+        ]
+    )
+    deployHistory([
+
+        app          : item.app,
+
+        env          : item.env,
+
+        branch       : item.config.mapping.branch,
+
+        commit       : item.commit,
+
+        short_commit : item.commit.take(7),
+
+        version      : buildInfo.version,
+
+        build        : result.number,
+
+        type         : "DEPLOY"
+    ])
+
+    notifyHistory([
+
+        app          : item.app,
+
+        env          : item.env,
+
+        branch       : item.config.mapping.branch,
+
+        commit       : item.commit,
+
+        short_commit : item.commit.take(7),
+
+        version      : buildInfo.version,
+
+        build        : result.number,
+
+        type         : "DEPLOY"
+    ])
+    /*
+    |--------------------------------------------------------------------------
+    | Update Deploy State
+    |--------------------------------------------------------------------------
+    */
+
+    sh """
+
+    mkdir -p ${env.DEPLOY_STATE_DIR}/${item.app}
+
+    echo ${item.commit} > \
+    ${env.DEPLOY_STATE_DIR}/${item.app}/${item.env}.commit
+
+    """
+}
+
+def getRequiredBuilders() {
+
+    def builders = [:]
+
+    BUILD_QUEUE.each { item ->
+
+        if (item.needBuild) {
+
+            def builder = selectBuilder(
+                "build",
+                CONFIG
+            )
+
+            builders[builder] =
+                CONFIG.builders[builder]
+        }
+
+        if (item.needFC) {
+
+            def builder = selectBuilder(
+                "files",
+                CONFIG
+            )
+
+            builders[builder] =
+                CONFIG.builders[builder]
+        }
+    }
+
+    return builders
+}

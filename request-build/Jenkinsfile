@@ -1,0 +1,199 @@
+@Library('cicd-library') _
+
+import groovy.json.JsonSlurperClassic
+import java.util.UUID
+
+pipeline {
+
+    agent any
+
+    triggers {
+
+        GenericTrigger(
+
+            token: 'request',
+
+            genericVariables: [
+
+                [
+                    key: 'POST_CONTENT',
+                    value: '$'
+                ],
+
+                [
+                    key: 'ACTION',
+                    value: '$.action'
+                ],
+
+                [
+                    key: 'MERGED',
+                    value: '$.pull_request.merged'
+                ]
+            ],
+
+            printContributedVariables: true,
+
+            printPostContent: true
+        )
+    }
+
+    options {
+
+        disableConcurrentBuilds()
+
+        buildDiscarder(
+            logRotator(numToKeepStr: '20')
+        )
+
+        timestamps()
+    }
+
+    stages {
+
+        stage('Validate Event') {
+
+            steps {
+
+                script {
+
+                    if (env.ACTION != "closed") {
+
+                        currentBuild.result = "NOT_BUILT"
+
+                        echo "Ignoring GitHub event."
+
+                        return
+                    }
+
+                    if (env.MERGED != "true") {
+
+                        currentBuild.result = "NOT_BUILT"
+
+                        echo "Pull Request was closed without merge."
+
+                        return
+                    }
+
+                    echo """
+
+                    =====================================
+                    MERGED PULL REQUEST
+                    =====================================
+
+                    """
+                }
+            }
+        }
+
+        stage('Create Deployment Request') {
+
+            steps {
+
+                script {
+
+                    def payload =
+                        new JsonSlurperClassic().parseText(env.POST_CONTENT)
+
+                    def CONFIG = loadMappings()
+
+                    def labels =
+                        payload.pull_request.labels.collect { it.name }
+
+                    def targetEnv = null
+                    def actions = []
+
+                    labels.each { label ->
+
+                        if (CONFIG.labels.env.containsKey(label)) {
+
+                            targetEnv = CONFIG.labels.env[label]
+                        }
+
+                        if (CONFIG.labels.actions.containsKey(label)) {
+
+                            actions = CONFIG.labels.actions[label]
+                        }
+                    }
+
+                    if (!targetEnv) {
+
+                        error "No environment label found."
+                    }
+
+                    if (!actions) {
+
+                        error "No action label found."
+                    }
+
+                    def request = [
+
+                        id           : UUID.randomUUID().toString(),
+
+                        app          : payload.repository.name,
+
+                        pr           : payload.pull_request.number,
+
+                        env          : targetEnv,
+
+                        actions      : actions,
+
+                        status       : "pending",
+
+                        requested_by : payload.pull_request.merged_by.login,
+
+                        requested_at : new Date().format(
+
+                            "yyyy-MM-dd'T'HH:mm:ss'Z'",
+
+                            TimeZone.getTimeZone("UTC")
+                        )
+                    ]
+
+                    updateRequests("Add deployment request") {
+
+                        if (!it.requests.find { r ->
+
+                            r.app == request.app &&
+                            r.pr == request.pr &&
+                            r.status == "pending"
+                        }) {
+
+                            it.requests << request
+                        }
+                    }
+
+                    echo """
+
+                    =====================================
+                    REQUEST CREATED
+                    =====================================
+
+                    APP      : ${request.app}
+
+                    PR       : #${request.pr}
+
+                    ENV      : ${request.env}
+
+                    ACTIONS  : ${request.actions}
+
+                    REQUESTED BY : ${request.requested_by}
+
+                    """
+                }
+            }
+        }
+
+        stage('Trigger Orchestrator') {
+
+            steps {
+
+                build(
+
+                    job: "Orchestrator-Pipeline",
+
+                    wait: false
+                )
+            }
+        }
+    }
+}
