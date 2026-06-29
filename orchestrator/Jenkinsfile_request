@@ -637,15 +637,10 @@ pipeline {
 
                             updateRequests(
 
-                                "Remove completed request"
+                                action: "remove",
 
-                            ) {
-
-                                it.requests.removeAll {
-
-                                    r -> r.id == item.id
-                                }
-                            }
+                                id: item.id
+                            )
                         }
                     }
 

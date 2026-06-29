@@ -149,18 +149,12 @@ pipeline {
                         )
                     ]
 
-                    updateRequests("Add deployment request") {
+                    updateRequests(
 
-                        if (!it.requests.find { r ->
+                        action : "add",
 
-                            r.app == request.app &&
-                            r.pr == request.pr &&
-                            r.status == "pending"
-                        }) {
-
-                            it.requests << request
-                        }
-                    }
+                        request: request
+                    )
 
                     echo """
 
