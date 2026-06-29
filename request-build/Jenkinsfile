@@ -10,7 +10,7 @@ pipeline {
 
         GenericTrigger(
 
-            token: 'request',
+            token: 'orchestrator-trigger',
 
             genericVariables: [
 
