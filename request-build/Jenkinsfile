@@ -54,12 +54,6 @@ pipeline {
                         text: env.POST_CONTENT
                     )
 
-                    /*
-                    ----------------------------------------------------------
-                    Only Pull Request events
-                    ----------------------------------------------------------
-                    */
-
                     if (!payload.pull_request) {
 
                         env.PROCESS_REQUEST = "false"
@@ -71,13 +65,7 @@ pipeline {
                         return
                     }
 
-                    /*
-                    ----------------------------------------------------------
-                    Only Label Events
-                    ----------------------------------------------------------
-                    */
-
-                    if (payload.action != "labeled") {
+                    if (payload.action != "closed") {
 
                         env.PROCESS_REQUEST = "false"
 
@@ -88,19 +76,13 @@ pipeline {
                         return
                     }
 
-                    /*
-                    ----------------------------------------------------------
-                    Only Deployment Request Label
-                    ----------------------------------------------------------
-                    */
-
-                    if (payload.label?.name != "request:deploy") {
+                    if (!payload.pull_request?.merged) {
 
                         env.PROCESS_REQUEST = "false"
 
                         currentBuild.result = "NOT_BUILT"
 
-                        echo "Ignoring label: ${payload.label?.name}"
+                        echo "PR closed without merge."
 
                         return
                     }
@@ -112,67 +94,25 @@ pipeline {
                     ----------------------------------------------------------
                     */
 
-                    def CONFIG = loadMappings()
+                    def CONFIG = loadMappings()                    
 
                     def labels =
-                        payload.pull_request.labels.collect {
+                        payload.pull_request.labels*.name
 
-                            it.name
-                        }
+                    def deployment =
+                        loadRequestLabel(labels, CONFIG)
 
-                    if (!labels.contains("request:deploy")) {
-
-                        env.PROCESS_REQUEST = "false"
-
-                        currentBuild.result = "NOT_BUILT"
-
-                        echo "Deployment request label not found."
-
-                        return
-                    }
-
-                    def targetEnv = null
-
-                    def actions = []
-
-                    labels.each { label ->
-
-                        if (CONFIG.labels.env.containsKey(label)) {
-
-                            targetEnv =
-                                CONFIG.labels.env[label]
-                        }
-
-                        if (CONFIG.labels.actions.containsKey(label)) {
-
-                            actions =
-                                CONFIG.labels.actions[label]
-                        }
-                    }
-
-                    /*
-                    ----------------------------------------------------------
-                    Ignore PRs without deployment labels
-                    ----------------------------------------------------------
-                    */
-
-                    if (!targetEnv || actions.isEmpty()) {
+                    if (!deployment) {
 
                         env.PROCESS_REQUEST = "false"
 
                         currentBuild.result = "NOT_BUILT"
 
-                        echo """
-                        No deployment labels found.
-
-                        Labels:
-
-                        ${labels.join(", ")}
-                        """
+                        echo "No deployment request label."
 
                         return
                     }
-
+                    
                     /*
                     ----------------------------------------------------------
                     Create Deployment Request
@@ -183,29 +123,24 @@ pipeline {
 
                         id : UUID.randomUUID().toString(),
 
-                        app :
-                            payload.repository.name,
+                        app : payload.repository.name,
 
-                        pr :
-                            payload.pull_request.number,
+                        pr : payload.pull_request.number,
 
-                        env :
-                            targetEnv,
+                        requestLabel : deployment.label,
 
-                        actions :
-                            actions,
+                        env : deployment.env,
 
-                        status :
-                            "pending",
+                        actions : deployment.actions,
 
-                        requested_by :
-                            payload.sender.login,
+                        status : "pending",
 
-                        requested_at :
-                            new Date().format(
-                                "yyyy-MM-dd'T'HH:mm:ss'Z'",
-                                TimeZone.getTimeZone("UTC")
-                            )
+                        requested_by : payload.sender.login,
+
+                        requested_at : new Date().format(
+                            "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                            TimeZone.getTimeZone("UTC")
+                        )
                     ]
 
                     updateRequests(
@@ -226,22 +161,16 @@ pipeline {
                     echo """
 
                     =====================================
-
                     DEPLOYMENT REQUEST CREATED
-
                     =====================================
 
-                    APP        : ${request.app}
-
-                    PR         : #${request.pr}
-
-                    ENV        : ${request.env}
-
-                    ACTIONS    : ${request.actions.join(',')}
-
-                    REQUESTED  : ${request.requested_by}
-
-                    STATUS     : ${request.status}
+                    APP           : ${request.app}
+                    PR            : #${request.pr}
+                    REQUEST LABEL : ${request.requestLabel}
+                    ENV           : ${request.env}
+                    ACTIONS       : ${request.actions.join(',')}
+                    REQUESTED BY  : ${request.requested_by}
+                    STATUS        : ${request.status}
 
                     """
                 }
