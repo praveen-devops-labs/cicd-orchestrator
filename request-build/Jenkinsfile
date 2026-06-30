@@ -31,7 +31,7 @@ pipeline {
 
                 [
                     key: 'label',
-                    value: '$.label.name'
+                    value: '$.pull_request.labels..name'
                 ]
 
             ],
