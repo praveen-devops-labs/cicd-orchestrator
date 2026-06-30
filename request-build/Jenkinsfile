@@ -17,6 +17,16 @@ pipeline {
                 [
                     key: 'POST_CONTENT',
                     value: '$'
+                ],
+
+                [
+                    key: 'action',
+                    value: '$.action'
+                ],
+
+                [
+                    key: 'merged',
+                    value: '$.pull_request.merged'
                 ]
             ],
 
