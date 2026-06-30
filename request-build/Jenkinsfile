@@ -27,11 +27,25 @@ pipeline {
                 [
                     key: 'merged',
                     value: '$.pull_request.merged'
+                ],
+
+                [
+                    key: 'label',
+                    value: '$.label.name'
                 ]
+
             ],
 
+            regexpFilterText:
+                '$action $merged $label',
+
+            regexpFilterExpression:
+                '^closed true request:.*$',
+
             printContributedVariables: true,
+
             printPostContent: true
+
         )
     }
 
