@@ -16,7 +16,7 @@ pipeline {
                 [key: 'LABEL', value: '$.pull_request.labels[0].name']
             ],
 
-            printContributedVariables: true
+            printContributedVariables: true,
             printPostContent: true
         )
     }
