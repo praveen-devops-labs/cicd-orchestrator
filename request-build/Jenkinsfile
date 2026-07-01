@@ -13,10 +13,21 @@ pipeline {
             token: 'request-trigger',
 
             genericVariables: [
-                [key: 'LABEL', value: '$.pull_request.labels[0].name']
+
+                [key:'ACTION', value:'$.action'],
+                [key:'MERGED', value:'$.pull_request.merged'],
+                [key:'LABEL', value:'$.pull_request.labels[0].name'],
+                [key:'PR', value:'$.pull_request.number'],
+                [key:'REPO', value:'$.repository.name'],
+                [key:'USER', value:'$.sender.login']
             ],
 
+            regexpFilterText: '$ACTION',
+
+            regexpFilterExpression: '^closed$',
+
             printContributedVariables: true,
+
             printPostContent: true
         )
     }
@@ -46,33 +57,21 @@ pipeline {
                     ----------------------------------------------------------
                     */
 
-                    def payload = readJSON(
-                        text: env.POST_CONTENT
-                    )
+                    echo "POST_CONTENT = ${env.POST_CONTENT}"
+                    echo "LABEL        = ${env.LABEL}"
 
-                    if (!payload.pull_request) {
-
-                        env.PROCESS_REQUEST = "false"
-
-                        currentBuild.result = "NOT_BUILT"
-
-                        echo "Ignoring non Pull Request event."
-
-                        return
-                    }
-
-                    if (payload.action != "closed") {
+                    if (env.ACTION != "closed") {
 
                         env.PROCESS_REQUEST = "false"
 
                         currentBuild.result = "NOT_BUILT"
 
-                        echo "Ignoring event: ${payload.action}"
+                        echo "Ignoring event: ${env.ACTION}"
 
                         return
                     }
 
-                    if (!payload.pull_request?.merged) {
+                    if (env.MERGED != "true") {
 
                         env.PROCESS_REQUEST = "false"
 
@@ -92,11 +91,8 @@ pipeline {
 
                     def CONFIG = loadMappings()                    
 
-                    def labels =
-                        payload.pull_request.labels*.name
-
                     def deployment =
-                        loadRequestLabel(labels, CONFIG)
+                         loadRequestLabel([env.LABEL], CONFIG)
 
                     if (!deployment) {
 
@@ -119,9 +115,9 @@ pipeline {
 
                         id : UUID.randomUUID().toString(),
 
-                        app : payload.repository.name,
+                        app : env.REPO,
 
-                        pr : payload.pull_request.number,
+                        pr : env.PR.toInteger(),
 
                         requestLabel : deployment.label,
 
@@ -131,7 +127,7 @@ pipeline {
 
                         status : "pending",
 
-                        requested_by : payload.sender.login,
+                        requested_by : env.USER,
 
                         requested_at : new Date().format(
                             "yyyy-MM-dd'T'HH:mm:ss'Z'",
