@@ -13,8 +13,8 @@ pipeline {
             token: 'request-trigger',
 
             genericVariables: [
-                [key:'labels', value:'$.pull_request.labels[*].name']
-            ]
+                [key: 'LABEL', value: '$.pull_request.labels[0].name']
+            ],
 
             printContributedVariables: true
             printPostContent: true
