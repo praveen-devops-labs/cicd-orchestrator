@@ -15,37 +15,14 @@ pipeline {
             genericVariables: [
 
                 [
-                    key: 'POST_CONTENT',
-                    value: '$'
-                ],
-
-                [
                     key: 'action',
                     value: '$.action'
-                ],
-
-                [
-                    key: 'merged',
-                    value: '$.pull_request.merged'
-                ],
-
-                [
-                    key: 'label',
-                    value: '$.pull_request.labels..name'
                 ]
 
             ],
 
-            regexpFilterText:
-                '$action $merged $label',
-
-            regexpFilterExpression:
-                '^closed true request:.*$',
-
             printContributedVariables: true,
-
             printPostContent: true
-
         )
     }
 

@@ -52,13 +52,7 @@ pipeline {
                     """
 
                     CONFIG = loadMappings()
-                    echo """
-                    CONFIG BUILDERS:
-                    ${writeJSON(returnText:true, json:CONFIG.builders)}
-
-                    CONFIG WORKLOADS:
-                    ${writeJSON(returnText:true, json:CONFIG.workloads)}
-                    """
+                    
                     env.DOCKER_REPO =
                         CONFIG.docker.repo ?: ''
 
@@ -262,6 +256,7 @@ pipeline {
                             registry   : envCfg.docker_build?.container_registry ?: '',
                             image_repo : envCfg.docker_build?.image_repo ?: '',
                             war_name   : envCfg.docker_build?.war_name ?: '',
+                            war_context: envCfg.docker_build?.war_context?: '',
                             fcDestination : envCfg.cdn?.fc_destination ?: '',
                             gcpBucket : envCfg.cdn?.gcp_bucket ?: '',
                             cdnKeep : envCfg.cdn?.keep_version ?: '',
@@ -455,57 +450,131 @@ pipeline {
                             | BUILD
                             |--------------------------------------------------------------------------
                             */
+                            def appJobs = [:]
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | BUILD (+ DEPLOY)
+                            |--------------------------------------------------------------------------
+                            */
 
                             if (item.needBuild) {
 
-                                buildPipelineResult = build(
-                                    job: 'Build-Pipeline',
-                                    wait: true,
-                                    propagate: true,
-                                    parameters: [
-                                        string(name:'APP_NAME', value:item.app),
-                                        string(name:'TARGET_ENV', value:item.env),
-                                        string(name:'COMMIT_FULL', value:item.commit),
-                                        string(name:'REPO_URL', value:item.repo),
-                                        string(name:'BRANCH_NAME', value:item.branch),
-                                        string(name:'REGISTRY', value:item.registry),
-                                        string(name:'IMAGE_REPO', value:item.image_repo),
-                                        string(name:'DOCKER_REPO', value:env.DOCKER_REPO),
-                                        string(name:'DOCKER_BRANCH', value:env.DOCKER_BRANCH),
-                                        string(name:'DOCKER_DIR', value:env.DOCKER_DIR),
-                                        text(name:'NOTIFICATION_WEBHOOKS', value:writeJSON(returnText:true, json:item.notificationWebhooks))
+                                appJobs["Build"] = {
+
+                                    buildPipelineResult = build(
+                                        job: 'Build-Pipeline',
+                                        wait: true,
+                                        propagate: true,
+                                        parameters: [
+                                            string(name:'APP_NAME', value:item.app),
+                                            string(name:'TARGET_ENV', value:item.env),
+                                            string(name:'COMMIT_FULL', value:item.commit),
+                                            string(name:'REPO_URL', value:item.repo),
+                                            string(name:'BRANCH_NAME', value:item.branch),
+                                            string(name:'REGISTRY', value:item.registry),
+                                            string(name:'IMAGE_REPO', value:item.image_repo),
+                                            string(name:'DOCKER_REPO', value:env.DOCKER_REPO),
+                                            string(name:'DOCKER_BRANCH', value:env.DOCKER_BRANCH),
+                                            string(name:'DOCKER_DIR', value:env.DOCKER_DIR),
+                                            string(name:'WAR_NAME', value:item.war_name),
+                                            string(name:'WAR_CONTEXT', value:item.war_context),
+                                            text(
+                                                name:'NOTIFICATION_WEBHOOKS',
+                                                value:writeJSON(
+                                                    returnText:true,
+                                                    json:item.notificationWebhooks
+                                                )
+                                            )
+                                        ]
+                                    )
+
+                                    sh """
+                                    mkdir -p ${env.BUILD_STATE_DIR}/${item.app}
+
+                                    echo ${item.commit} > \
+                                    ${env.BUILD_STATE_DIR}/${item.app}/${item.env}.commit
+                                    """
+
+                                    def metadata =
+                                        buildPipelineResult?.description ?
+                                        readJSON(text: buildPipelineResult.description) :
+                                        [:]
+
+                                    def history = [
+                                        app          : item.app,
+                                        branch       : item.branch,
+                                        commit       : item.commit,
+                                        short_commit : item.commit.take(7),
+                                        md5          : metadata.md5 ?: "",
+                                        version      : metadata.version ?: "",
+                                        image        : metadata.image ?: "",
+                                        build        : buildPipelineResult.number,
+                                        env          : item.env,
+                                        type         : "BUILD"
                                     ]
-                                )
 
-                                sh """
-                                mkdir -p ${env.BUILD_STATE_DIR}/${item.app}
+                                    buildHistory(history)
+                                    notifyHistory(history)
 
-                                echo ${item.commit} > \
-                                ${env.BUILD_STATE_DIR}/${item.app}/${item.env}.commit
-                                """
+                                    /*
+                                    -------------------------------------------------------------
+                                    DEPLOY AFTER BUILD
+                                    -------------------------------------------------------------
+                                    */
 
-                                def metadata =
-                                    buildPipelineResult?.description ?
-                                    readJSON(text: buildPipelineResult.description) :
-                                    [:]
+                                    if (item.needDeploy) {
 
-                                def history = [
+                                        build(
+                                            job: 'Deploy-Pipeline',
+                                            wait: true,
+                                            propagate: true,
+                                            parameters: [
+                                                string(name:'APP_NAME', value:item.app),
+                                                string(name:'TARGET_ENV', value:item.env),
+                                                string(name:'VERSION', value:metadata.version ?: ""),
+                                                string(name:'COMMIT_FULL', value:item.commit),
+                                                text(
+                                                    name:'NOTIFICATION_WEBHOOKS',
+                                                    value:writeJSON(
+                                                        returnText:true,
+                                                        json:item.notificationWebhooks
+                                                    )
+                                                )
+                                            ]
+                                        )
+                                    }
+                                }
 
-                                    app          : item.app,
-                                    branch       : item.branch,
-                                    commit       : item.commit,
-                                    short_commit : item.commit.take(7),
-                                    md5          : metadata.md5 ?: "",
-                                    version      : metadata.version ?: "",
-                                    image        : metadata.image ?: "",
-                                    build        : buildPipelineResult.number,
-                                    env          : item.env,
-                                    type         : "BUILD"
-                                ]
+                            } else if (item.needDeploy) {
 
-                                buildHistory(history)
+                                /*
+                                |--------------------------------------------------------------------------
+                                | DEPLOY ONLY
+                                |--------------------------------------------------------------------------
+                                */
 
-                                notifyHistory(history)
+                                appJobs["Deploy"] = {
+
+                                    build(
+                                        job: 'Deploy-Pipeline',
+                                        wait: true,
+                                        propagate: true,
+                                        parameters: [
+                                            string(name:'APP_NAME', value:item.app),
+                                            string(name:'TARGET_ENV', value:item.env),
+                                            string(name:'VERSION', value:item.version ?: ""),
+                                            string(name:'COMMIT_FULL', value:item.commit),
+                                            text(
+                                                name:'NOTIFICATION_WEBHOOKS',
+                                                value:writeJSON(
+                                                    returnText:true,
+                                                    json:item.notificationWebhooks
+                                                )
+                                            )
+                                        ]
+                                    )
+                                }
                             }
 
                             /*
@@ -516,113 +585,77 @@ pipeline {
 
                             if (item.needFC) {
 
-                                filesPipelineResult = build(
+                                appJobs["Files"] = {
 
-                                    job: 'Files-Pipeline',
+                                    filesPipelineResult = build(
+                                        job: 'Files-Pipeline',
+                                        wait: true,
+                                        propagate: true,
+                                        parameters: [
 
-                                    wait: true,
+                                            string(name:'APP_NAME', value:item.app),
+                                            string(name:'TARGET_ENV', value:item.env),
+                                            string(name:'COMMIT_FULL', value:item.commit),
+                                            string(name:'REPO_URL', value:item.repo),
+                                            string(name:'BRANCH_NAME', value:item.branch),
+                                            string(name:'FC_DESTINATION', value:item.fcDestination),
+                                            string(name:'CDN_KEEP', value:"${item.cdnKeep}"),
+                                            string(name:'GCP_BUCKET', value:item.gcpBucket),
+                                            string(name:'GCP_URL', value:item.gcpUrl),
+                                            string(name:'AWS_S3_BUCKET', value:item.awsBucket),
+                                            string(name:'AWS_S3_URL', value:item.awsUrl),
+                                            string(name:'SSH_HOST', value:item.sshHost),
+                                            string(name:'ES_URL', value:"${item.esUrl}"),
+                                            string(name:'ES_INDEX', value:"${item.esIndex}"),
+                                            string(name:'GCP_DOC_ID', value:"${item.gcpDocId}"),
+                                            string(name:'AWS_DOC_ID', value:"${item.awsDocId}"),
+                                            string(name:'CACHE_ENABLED', value:"${item.cacheClearEnabled}"),
+                                            text(name:'CACHE_TARGETS', value:writeJSON(returnText:true, json:item.cacheClearTargets)),
+                                            string(name:'CACHE_API', value:item.cacheClearApiKey),
+                                            string(name:'CACHE_ACCESS', value:item.cacheClearAccessKey),
+                                            text(name:'NOTIFICATION_WEBHOOKS', value:writeJSON(returnText:true, json:item.notificationWebhooks))
+                                        ]
+                                    )
 
-                                    propagate: true,
+                                    sh """
+                                    mkdir -p ${env.FILEGEN_STATE_DIR}/${item.app}
 
-                                    parameters: [
+                                    echo ${item.commit} > \
+                                    ${env.FILEGEN_STATE_DIR}/${item.app}/${item.env}.commit
+                                    """
 
-                                        string(name:'APP_NAME', value:item.app),
-                                        string(name:'TARGET_ENV', value:item.env),
-                                        string(name:'COMMIT_FULL', value:item.commit),
-                                        string(name:'REPO_URL', value:item.repo),
-                                        string(name:'BRANCH_NAME', value:item.branch),
-                                        string(name:'FC_DESTINATION', value:item.fcDestination),
-                                        string(name:'CDN_KEEP', value:"${item.cdnKeep}"),
-                                        string(name:'GCP_BUCKET', value:item.gcpBucket),
-                                        string(name:'GCP_URL', value:item.gcpUrl),
-                                        string(name:'AWS_S3_BUCKET', value:item.awsBucket),
-                                        string(name:'AWS_S3_URL', value:item.awsUrl),
-                                        string(name:'SSH_HOST', value:item.sshHost),
-                                        string(name:'ES_URL', value:"${item.esUrl}"),
-                                        string(name:'ES_INDEX', value:"${item.esIndex}"),
-                                        string(name:'GCP_DOC_ID', value:"${item.gcpDocId}"),
-                                        string(name:'AWS_DOC_ID', value:"${item.awsDocId}"),
-                                        string(name:'CACHE_ENABLED', value:"${item.cacheClearEnabled}"),
-                                        text(name:'CACHE_TARGETS', value:writeJSON(returnText:true, json:item.cacheClearTargets)),
-                                        string(name:'CACHE_API', value:item.cacheClearApiKey),
-                                        string(name:'CACHE_ACCESS', value:item.cacheClearAccessKey),
-                                        text(name:'NOTIFICATION_WEBHOOKS', value:writeJSON(returnText:true, json:item.notificationWebhooks))
+                                    def fileVersion =
+                                        filesPipelineResult.description ?: ""
+
+                                    def history = [
+                                        app          : item.app,
+                                        env          : item.env,
+                                        branch       : item.branch,
+                                        commit       : item.commit,
+                                        short_commit : item.commit.take(7),
+                                        version      : fileVersion,
+                                        gcp_url      : item.gcpUrl ? "${item.gcpUrl}/${fileVersion}" : "",
+                                        aws_url      : item.awsUrl ? "${item.awsUrl}/${fileVersion}" : "",
+                                        build        : filesPipelineResult.number,
+                                        type         : "FILES"
                                     ]
-                                )
 
-                                sh """
-                                mkdir -p ${env.FILEGEN_STATE_DIR}/${item.app}
-
-                                echo ${item.commit} > \
-                                ${env.FILEGEN_STATE_DIR}/${item.app}/${item.env}.commit
-                                """
-
-                                def fileVersion =
-                                    filesPipelineResult.description ?: ""
-
-                                def history = [
-                                    app          : item.app,
-                                    env          : item.env,
-                                    branch       : item.branch,
-                                    commit       : item.commit,
-                                    short_commit : item.commit.take(7),
-                                    version      : fileVersion,
-                                    gcp_url      : item.gcpUrl ? "${item.gcpUrl}/${fileVersion}" : "",
-                                    aws_url      : item.awsUrl ? "${item.awsUrl}/${fileVersion}" : "",
-                                    build        : filesPipelineResult.number,
-                                    type         : "FILES"
-                                ]
-
-                                filesHistory(history)
-
-                                notifyHistory(history)
+                                    filesHistory(history)
+                                    notifyHistory(history)
+                                }
                             }
 
-                            /*
-                            |--------------------------------------------------------------------------
-                            | DEPLOY
-                            |--------------------------------------------------------------------------
-                            */
-
-                            if (item.needDeploy) {
-
-                                def metadata =
-                                    buildPipelineResult?.description ?
-                                    readJSON(text: buildPipelineResult.description) :
-                                    [:]
-
-                                def buildVersion =
-                                    metadata.version ?: ""
-
-                                build(
-                                    job: 'Deploy-Pipeline',
-                                    wait: true,
-                                    propagate: true,
-                                    parameters: [
-
-                                        string(name:'APP_NAME', value:item.app),
-                                        string(name:'TARGET_ENV', value:item.env),
-                                        string(name:'VERSION', value:buildVersion),
-                                        string(name:'COMMIT_FULL', value:item.commit),
-                                        text(
-                                            name:'NOTIFICATION_WEBHOOKS',
-                                            value:writeJSON(
-                                                returnText:true,
-                                                json:item.notificationWebhooks
-                                            )
-                                        )
-                                    ]
-                                )
-                            }
+                            if (!appJobs.isEmpty()) {
+                                parallel appJobs
+                            }     
                         }
                     }
-
                     if (!queueJobs.isEmpty()) {
 
                         parallel queueJobs
                     }
                 }
-            }        
+            }                   
         }
     }    
     post {
